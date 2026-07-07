@@ -1,10 +1,10 @@
 ;;; qso.el --- Amateur radio QSO logging -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2025, David Pentrack
+;; Copyright (C) 2026, David Pentrack
 ;; Author: David Pentrack
 ;; URL: https://github.com/K6SM/Emacs-QSO-Logger
 ;; Keywords: lisp
-;; Version: 1.0.6
+;; Version: 1.1.0
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -101,6 +101,12 @@
 (defcustom qso-call-lookup t
   "If non-nil, provide a callsign lookup function/button."
   :tag "QSO Callsign Lookup"
+  :type 'boolean
+  :group 'qso)
+
+(defcustom qso-call-lookup-autofill-name nil
+  "If non-nil, provide a callsign lookup/autofill-name function/button."
+  :tag "QSO Callsign Lookup Autofill Name"
   :type 'boolean
   :group 'qso)
 
@@ -1002,40 +1008,94 @@
         (when field-definition
           (let ((widget (apply #'widget-create field-definition)))
             (setq widget-alist (append widget-alist (list (list field widget clear-after-submit))))
-	    (when (and (eq field 'CALL) qso-call-lookup)
-	      (widget-create 'push-button
-			     :notify (lambda (&rest _)
-				       (let ((_adif-string "")
-					     (call-value nil)
-					     (_date-value "")
-					     (_time-value ""))
-					 ;; Collect data from each widget
-					 (dolist (field-pair widget-alist)
-					   (let* ((field (nth 0 field-pair))
-						  (widget (nth 1 field-pair))
-						  (_clear-after-submit (nth 2 field-pair))
-						  (value (widget-value widget)))
-					     (setq value (string-trim value)) ;; Remove whitespace
-					     ;; Store the CALL value for duplicate check
-					     (when (eq field 'CALL)
-					       (setq call-value value))))
-					 (let* ((url (format "https://callook.info/%s/text" call-value))
-					       (buffer (url-retrieve-synchronously url)))
-					   (if buffer
-					       (with-current-buffer buffer
-						 (goto-char (point-min))
-						 (re-search-forward "^$" nil 'move)
-						 (forward-line)
-						 (let ((content (buffer-substring (point) (point-max))))
-						   (with-current-buffer (get-buffer-create "*Callsign Info*")
-						     (erase-buffer)
-						     (insert content)
-						     (goto-char (point-min))
-						     (display-buffer (current-buffer))))))))
+	    (when (eq field 'CALL)
+	      (when qso-call-lookup
+		(widget-create 'push-button
+			       :notify (lambda (&rest _)
+					 (let ((_adif-string "")
+					       (call-value nil)
+					       (_date-value "")
+					       (_time-value ""))
+					   ;; Collect data from each widget
+					   (dolist (field-pair widget-alist)
+					     (let* ((field (nth 0 field-pair))
+						    (widget (nth 1 field-pair))
+						    (_clear-after-submit (nth 2 field-pair))
+						    (value (widget-value widget)))
+					       (setq value (string-trim value)) ;; Remove whitespace
+					       ;; Store the CALL value for duplicate check
+					       (when (eq field 'CALL)
+						 (setq call-value value))))
+					   (let* ((url (format "https://callook.info/%s/text" call-value))
+						  (buffer (url-retrieve-synchronously url)))
+					     (if buffer
+						 (with-current-buffer buffer
+						   (goto-char (point-min))
+						   (re-search-forward "^$" nil 'move)
+						   (forward-line)
+						   (let ((content (buffer-substring (point) (point-max))))
+						     (with-current-buffer (get-buffer-create "*Callsign Info*")
+						       (erase-buffer)
+						       (insert content)
+						       (goto-char (point-min))
+						       (display-buffer (current-buffer))))))))
 				       (message "Callsign Info Acquired"))
-			     "Lookup")
-	      (widget-insert "\n"))
-	    (when (and (eq field 'CALL) (not qso-call-lookup))
+			       "Lookup"))
+	      (when qso-call-lookup-autofill-name
+		(widget-create 'push-button
+			       :notify (lambda (&rest _)
+					 (let ((_adif-string "")
+					       (call-value nil)
+					       (_date-value "")
+					       (_time-value ""))
+					   ;; Collect data from each widget
+					   (dolist (field-pair widget-alist)
+					     (let* ((field (nth 0 field-pair))
+						    (widget (nth 1 field-pair))
+						    (_clear-after-submit (nth 2 field-pair))
+						    (value (widget-value widget)))
+					       (setq value (string-trim value)) ;; Remove whitespace
+					       ;; Store the CALL value for duplicate check
+					       (when (eq field 'CALL)
+						 (setq call-value value))))
+					   (let* ((url (format "https://callook.info/%s/text" call-value))
+						  (buffer (url-retrieve-synchronously url)))
+					     (if buffer
+						 (with-current-buffer buffer
+						   (goto-char (point-min))
+						   (re-search-forward "^$" nil 'move)
+						   (forward-line)
+						   (let ((content (buffer-substring (point) (point-max))))
+						     (with-current-buffer (get-buffer-create "*Callsign Info*")
+						       (erase-buffer)
+						       (insert content)
+						       (goto-char (point-min))
+						       (display-buffer (current-buffer))))))))
+					 (let ((info-buffer (get-buffer "*Callsign Info*")))
+					   (if (null info-buffer)
+					       (message "Error: No *Callsign Info* buffer found.")
+					     (with-current-buffer info-buffer
+					       (if (string-match-p "Invalid callsign!" (buffer-string))
+						   (message "Error: Invalid callsign - Name field not populated.")
+						 (let ((name-value nil))
+						   (goto-char (point-min))
+						   (if (re-search-forward "^Name \\+ Address:$" nil t)
+						       (progn
+							 (forward-line 1)
+							 (setq name-value
+							       (string-trim
+								(buffer-substring
+								 (line-beginning-position)
+								 (line-end-position)))))
+						     (message "Error: Could not find \"Name + Address:\" in *Callsign Info*."))
+						   (when name-value
+						     (let ((name-widget (nth 1 (assq 'NAME widget-alist))))
+						       (if (null name-widget)
+							   (message "Error: No \"Name\" field in QSO Log Entry - Name not populated.")
+							 (widget-value-set name-widget name-value)
+							 (widget-setup)
+							 (message "Name autofilled: %s" name-value))))))))))
+			       "Lookup/Autofill Name"))
 	      (widget-insert "\n"))))))
 
     ;; Add submit, clear and quit buttons
