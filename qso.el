@@ -4,7 +4,7 @@
 ;; Author: David Pentrack
 ;; URL: https://github.com/K6SM/Emacs-QSO-Logger
 ;; Keywords: lisp
-;; Version: 1.1.0
+;; Version: 1.2.0
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -56,6 +56,10 @@
 ;;   - Also useful for repeating sent information reports in contests
 ;; - Automatically populates BAND based on FREQ for commonly used
 ;;   bands, if otherwise left blank or not shown on the form
+;; - Optional live radio synchronization through Hamlib's rigctld:
+;;   FREQ, MODE and SUBMODE follow the radio as the operator tunes
+;;   or changes mode, and the current reading is shown in the header
+;;   line above the form
 ;; - Option to lookup callsign information and show the information
 ;;   (text) in another buffer (requires an internet connection)
 ;; - Option to check the log for duplicates before recording the QSO
@@ -75,11 +79,36 @@
 ;;  6) Click "Apply" or "Apply and Save" as appropriate.
 ;;  7) Execute M-x qso-log-form to bring up and begin using the log
 ;;     entry form.
+;;
+;; Reading Frequency and Mode From the Radio (optional)
+;;
+;;  1) Install Hamlib and start its rigctld daemon against your radio,
+;;     for example:
+;;
+;;       rigctld -m 3073 -r /dev/ttyUSB0 -s 38400
+;;
+;;     Run "rigctl -l" to find the model number (-m) for your radio.
+;;     rigctld is used rather than a direct serial connection so that
+;;     this package can share the radio with other software (WSJT-X,
+;;     fldigi, and so on) and so that polling never blocks Emacs.
+;;  2) Turn on "QSO Hamlib Enable" in the QSO customization group, and
+;;     set the host and port if rigctld is not on the default
+;;     localhost:4532.
+;;  3) Add FREQ, MODE and (optionally) SUBMODE to the form fields so
+;;     that the values are visible while logging.  SUBMODE is written
+;;     to the ADIF record whether or not it appears on the form.
+;;  4) Within the form, C-c C-r reads the radio once and C-c C-t turns
+;;     synchronization on or off.
+;;
+;; While synchronization is running, a field is updated only when it is
+;; empty or still holds the value the radio last put there, so anything
+;; typed by the operator is never overwritten.
 
 ;;; Code:
 
 (require 'wid-edit)
 (require 'cl-lib)
+(require 'subr-x)
 
 (defgroup qso nil
   "Amateur radio QSO logging."
@@ -120,6 +149,105 @@
   "Control operator's callsign."
   :tag "QSO Operator"
   :type 'string
+  :group 'qso)
+
+(defconst qso-form-buffer-name "*QSO Log Entry*"
+  "Name of the buffer holding the QSO log entry form.")
+
+(defcustom qso-hamlib-enable nil
+  "If non-nil, follow the radio's frequency and mode through Hamlib.
+
+`qso-log-form' opens a connection to a running rigctld daemon and
+polls it every `qso-hamlib-poll-interval' seconds, keeping the FREQ,
+MODE and SUBMODE fields in step with the radio and showing the current
+reading in the header line.
+
+This requires rigctld to be running already, for example:
+
+    rigctld -m 3073 -r /dev/ttyUSB0 -s 38400
+
+Run \"rigctl -l\" to find the model number for your radio."
+  :tag "QSO Hamlib Enable"
+  :type 'boolean
+  :group 'qso)
+
+(defcustom qso-hamlib-host "localhost"
+  "Host running the rigctld daemon."
+  :tag "QSO Hamlib Host"
+  :type 'string
+  :group 'qso)
+
+(defcustom qso-hamlib-port 4532
+  "TCP port on which the rigctld daemon is listening."
+  :tag "QSO Hamlib Port"
+  :type 'integer
+  :group 'qso)
+
+(defcustom qso-hamlib-poll-interval 1.0
+  "Seconds between readings of the radio's frequency and mode."
+  :tag "QSO Hamlib Poll Interval"
+  :type 'number
+  :group 'qso)
+
+(defcustom qso-hamlib-reconnect-interval 5.0
+  "Seconds to wait before retrying a failed connection to rigctld."
+  :tag "QSO Hamlib Reconnect Interval"
+  :type 'number
+  :group 'qso)
+
+(defcustom qso-hamlib-header-line t
+  "If non-nil, show the radio's frequency and mode in the form's header line.
+
+The header line reports the radio directly and is never edited, so it
+stays accurate even when the operator has typed over the FREQ or MODE
+field."
+  :tag "QSO Hamlib Header Line"
+  :type 'boolean
+  :group 'qso)
+
+(defcustom qso-hamlib-freq-format "%.6f"
+  "Format string used to render the radio's frequency in MHz."
+  :tag "QSO Hamlib Frequency Format"
+  :type 'string
+  :group 'qso)
+
+(defcustom qso-hamlib-mode-alist
+  '(("USB"     "SSB"  "USB")
+    ("LSB"     "SSB"  "LSB")
+    ("ECSSUSB" "SSB"  "USB")
+    ("ECSSLSB" "SSB"  "LSB")
+    ("CW"      "CW"   "")
+    ("CWR"     "CW"   "")
+    ("RTTY"    "RTTY" "")
+    ("RTTYR"   "RTTY" "")
+    ("AM"      "AM"   "")
+    ("AMS"     "AM"   "")
+    ("SAM"     "AM"   "")
+    ("SAL"     "AM"   "")
+    ("SAH"     "AM"   "")
+    ("DSB"     "AM"   "")
+    ("FM"      "FM"   "")
+    ("FMN"     "FM"   "")
+    ("WFM"     "FM"   "")
+    ("PKTUSB"  ""     "")
+    ("PKTLSB"  ""     "")
+    ("PKTFM"   ""     ""))
+  "How Hamlib mode names translate into ADIF MODE and SUBMODE values.
+
+Each entry is a Hamlib mode name followed by the ADIF MODE and ADIF
+SUBMODE to record for it.  An empty string means \"leave the field
+alone\".
+
+The packet modes are deliberately left empty: the radio reports only
+that it is in a data mode and cannot know whether the operator is
+running FT8, JS8, PSK31 or anything else, so guessing would file
+contacts under the wrong mode.  An operator who works one digital mode
+for a whole session can set PKTUSB to that mode here, for example
+\"FT8\", and have it filled in automatically."
+  :tag "QSO Hamlib Mode Map"
+  :type '(alist :key-type (string :tag "Hamlib mode")
+                :value-type (group (string :tag "ADIF MODE")
+                                   (string :tag "ADIF SUBMODE")))
   :group 'qso)
 
 (defcustom qso-form-fields
@@ -990,10 +1118,310 @@
   "QSO field definitions for the QSO Log Entry form.")
 
 
+;;; Radio synchronization through Hamlib's rigctld
+
+;; rigctld speaks a line oriented protocol on a TCP socket.  Prefixing a
+;; command with "+" selects its extended response, which names each value
+;; and terminates the reply with an "RPRT" status line, so a reply can be
+;; recognized as complete no matter how the operating system splits it
+;; across packets.  Asking for both values at once looks like this:
+;;
+;;     +\get_freq            get_freq:
+;;                           Frequency: 14074000
+;;                           RPRT 0
+;;     +\get_mode            get_mode:
+;;                           Mode: USB
+;;                           Passband: 2400
+;;                           RPRT 0
+
+(defconst qso--hamlib-query "+\\get_freq\n+\\get_mode\n"
+  "Commands sent to rigctld to read the current frequency and mode.")
+
+(defvar qso--hamlib-process nil
+  "Network connection to rigctld, or nil when not connected.")
+
+(defvar qso--hamlib-timer nil
+  "Repeating timer that polls the radio, or nil when not polling.")
+
+(defvar qso--hamlib-pending ""
+  "Text received from rigctld that does not yet form a complete line.")
+
+(defvar qso--hamlib-freq nil
+  "Frequency most recently reported by the radio, in hertz.")
+
+(defvar qso--hamlib-rig-mode nil
+  "Mode name most recently reported by the radio, as a Hamlib string.")
+
+(defvar qso--hamlib-error nil
+  "Description of the most recent radio communication failure, or nil.")
+
+(defvar qso--hamlib-next-retry 0
+  "Time, as returned by `float-time', before which not to redial rigctld.")
+
+(defvar qso--hamlib-inhibit nil
+  "When non-nil, leave the form alone even if a new reading arrives.
+Bound while a QSO is being submitted or cleared so that the poller
+cannot rearrange widgets underneath those operations.")
+
+(defvar-local qso--widget-alist nil
+  "Widgets of the form in this buffer, as (FIELD WIDGET CLEAR-AFTER-SUBMIT).
+`qso-log-form' keeps this so that the radio poller, which runs long
+after the form was built, can find the live widgets.")
+
+(defvar-local qso--hamlib-written nil
+  "Values this package last wrote into form fields, as (FIELD . VALUE).
+Used to tell a field the radio filled in from one the operator typed.")
+
+(defun qso--hamlib-live-p ()
+  "Return non-nil when the connection to rigctld is usable."
+  (and qso--hamlib-process (process-live-p qso--hamlib-process)))
+
+(defun qso--hamlib-connect ()
+  "Open a connection to rigctld.  Return non-nil on success."
+  (condition-case err
+      (progn
+        (setq qso--hamlib-pending "")
+        (setq qso--hamlib-process
+              (open-network-stream "qso-rigctld" nil
+                                   qso-hamlib-host qso-hamlib-port))
+        (set-process-query-on-exit-flag qso--hamlib-process nil)
+        (set-process-coding-system qso--hamlib-process 'utf-8-unix 'utf-8-unix)
+        (set-process-filter qso--hamlib-process #'qso--hamlib-filter)
+        (set-process-sentinel qso--hamlib-process #'qso--hamlib-sentinel)
+        (setq qso--hamlib-error nil)
+        t)
+    (error
+     (setq qso--hamlib-process nil)
+     (setq qso--hamlib-error (error-message-string err))
+     nil)))
+
+(defun qso--hamlib-disconnect ()
+  "Close the connection to rigctld, if any."
+  (when qso--hamlib-process
+    (ignore-errors (delete-process qso--hamlib-process)))
+  (setq qso--hamlib-process nil))
+
+(defun qso--hamlib-sentinel (_process event)
+  "Note that the radio connection ended with EVENT."
+  (setq qso--hamlib-error (string-trim event))
+  (setq qso--hamlib-freq nil)
+  (setq qso--hamlib-rig-mode nil)
+  (qso--hamlib-update-header-line))
+
+(defun qso--hamlib-filter (_process string)
+  "Split STRING arriving from rigctld into whole lines and act on each."
+  (setq qso--hamlib-pending (concat qso--hamlib-pending string))
+  (while (string-match "\\`\\([^\n]*\\)\n" qso--hamlib-pending)
+    (let ((line (match-string 1 qso--hamlib-pending)))
+      (setq qso--hamlib-pending
+            (substring qso--hamlib-pending (match-end 0)))
+      (qso--hamlib-handle-line (string-trim line)))))
+
+(defun qso--hamlib-handle-line (line)
+  "Interpret a single response LINE from rigctld."
+  (cond
+   ((string-match "\\`Frequency: \\([0-9]+\\)\\'" line)
+    (setq qso--hamlib-freq (string-to-number (match-string 1 line))))
+   ((string-match "\\`Mode: \\([A-Za-z0-9_-]+\\)\\'" line)
+    (setq qso--hamlib-rig-mode (match-string 1 line)))
+   ((string-match "\\`RPRT \\(-?[0-9]+\\)\\'" line)
+    ;; A response is complete; a nonzero status means the radio refused it.
+    (let ((status (string-to-number (match-string 1 line))))
+      (setq qso--hamlib-error
+            (unless (zerop status) (format "rigctld status %d" status))))
+    (qso--hamlib-apply))))
+
+(defun qso--hamlib-poll ()
+  "Read the radio, reconnecting first if the link has dropped."
+  (if (qso--hamlib-live-p)
+      (condition-case err
+          (process-send-string qso--hamlib-process qso--hamlib-query)
+        (error
+         (setq qso--hamlib-error (error-message-string err))
+         (qso--hamlib-disconnect)))
+    ;; Redial no more often than `qso-hamlib-reconnect-interval', so that a
+    ;; radio that is switched off does not produce a stream of failures.
+    (when (>= (float-time) qso--hamlib-next-retry)
+      (setq qso--hamlib-next-retry
+            (+ (float-time) qso-hamlib-reconnect-interval))
+      (when (qso--hamlib-connect)
+        (ignore-errors
+          (process-send-string qso--hamlib-process qso--hamlib-query)))))
+  (qso--hamlib-update-header-line))
+
+(defun qso--hamlib-freq-string ()
+  "Return the radio's frequency in MHz as a string, or nil if unknown."
+  (when (and qso--hamlib-freq (> qso--hamlib-freq 0))
+    (format qso-hamlib-freq-format (/ qso--hamlib-freq 1000000.0))))
+
+(defun qso--hamlib-adif-mode ()
+  "Return (MODE . SUBMODE) in ADIF terms for the radio's mode, or nil.
+Either element may be an empty string, meaning the radio's mode does not
+determine that field."
+  (when qso--hamlib-rig-mode
+    (let ((entry (assoc-string qso--hamlib-rig-mode qso-hamlib-mode-alist t)))
+      (when entry (cons (nth 1 entry) (nth 2 entry))))))
+
+(defun qso--hamlib-widget-accepts-p (widget value)
+  "Return non-nil when WIDGET can hold VALUE.
+A menu-choice only offers a fixed set of values, so setting it to
+anything else would leave the form displaying a value the operator
+cannot see or correct."
+  (if (eq (widget-type widget) 'menu-choice)
+      (let ((offered nil))
+        (dolist (choice (widget-get widget :args))
+          (when (ignore-errors (widget-apply choice :match value))
+            (setq offered t)))
+        offered)
+    t))
+
+(defun qso--hamlib-point-in-widget-p (widget)
+  "Return non-nil when point lies within WIDGET."
+  (let ((from (widget-get widget :from))
+        (to (widget-get widget :to)))
+    (and (markerp from)
+         (markerp to)
+         (>= (point) (marker-position from))
+         (<= (point) (marker-position to)))))
+
+(defun qso--hamlib-set-field (field value)
+  "Set FIELD's widget to VALUE, unless the operator owns the field.
+Return non-nil when the widget was changed.  A field is left alone when
+it holds anything other than what the radio last put there, and while
+point is inside it, so typing is never overwritten.
+
+An empty VALUE clears a field this package filled in earlier, which is
+what keeps a SUBMODE of USB from surviving a switch from SSB to CW.  A
+VALUE of nil means the radio said nothing about this field and leaves it
+untouched."
+  (let ((widget (nth 1 (assq field qso--widget-alist))))
+    (when (and widget
+               value
+               (or (string-empty-p value)
+                   (qso--hamlib-widget-accepts-p widget value)))
+      (let ((current (ignore-errors (widget-value widget)))
+            (ours (cdr (assq field qso--hamlib-written))))
+        (when (and (stringp current)
+                   (not (equal current value))
+                   (or (string-empty-p (string-trim current))
+                       (equal current ours))
+                   (not (qso--hamlib-point-in-widget-p widget)))
+          (save-excursion
+            (widget-value-set widget value))
+          (let ((cell (assq field qso--hamlib-written)))
+            (if cell
+                (setcdr cell value)
+              (push (cons field value) qso--hamlib-written)))
+          t)))))
+
+(defun qso--hamlib-apply ()
+  "Push the latest reading into the QSO form and its header line."
+  (let ((buffer (get-buffer qso-form-buffer-name)))
+    (when (and (buffer-live-p buffer) (not qso--hamlib-inhibit))
+      (with-current-buffer buffer
+        (let* ((mode-pair (qso--hamlib-adif-mode))
+               (changed nil))
+          (when (qso--hamlib-set-field 'FREQ (qso--hamlib-freq-string))
+            (setq changed t))
+          (when (qso--hamlib-set-field 'MODE (car mode-pair))
+            (setq changed t))
+          (when (qso--hamlib-set-field 'SUBMODE (cdr mode-pair))
+            (setq changed t))
+          (when changed
+            (widget-setup))
+          (qso--hamlib-update-header-line))))))
+
+(defun qso--hamlib-header-string ()
+  "Return the header line describing the radio, or nil to show none."
+  (cond
+   ((not (qso--hamlib-live-p))
+    (format " RADIO  no connection to rigctld at %s:%d%s"
+            qso-hamlib-host qso-hamlib-port
+            (if qso--hamlib-error (format " (%s)" qso--hamlib-error) "")))
+   ((null qso--hamlib-freq)
+    (format " RADIO  connected to %s:%d, waiting for a reading"
+            qso-hamlib-host qso-hamlib-port))
+   (t
+    (let* ((mode-pair (qso--hamlib-adif-mode))
+           (logged
+            (cond
+             ((null mode-pair) "not recognized")
+             ((string-empty-p (car mode-pair)) "not logged")
+             ((string-empty-p (cdr mode-pair)) (car mode-pair))
+             (t (format "%s / %s" (car mode-pair) (cdr mode-pair))))))
+      (format " RADIO  %s MHz   %s   logged as %s"
+              (or (qso--hamlib-freq-string) "?")
+              (or qso--hamlib-rig-mode "?")
+              logged)))))
+
+(defun qso--hamlib-update-header-line ()
+  "Refresh the radio reading shown above the QSO form."
+  (let ((buffer (get-buffer qso-form-buffer-name)))
+    (when (and (buffer-live-p buffer) qso-hamlib-header-line)
+      (with-current-buffer buffer
+        (setq header-line-format (qso--hamlib-header-string))
+        (force-mode-line-update)))))
+
+(defun qso-hamlib-start ()
+  "Start following the radio's frequency and mode through rigctld."
+  (interactive)
+  (qso--hamlib-cancel-timer)
+  (setq qso--hamlib-next-retry 0)
+  (qso--hamlib-connect)
+  (setq qso--hamlib-timer
+        (run-at-time 0 qso-hamlib-poll-interval #'qso--hamlib-poll))
+  (message "QSO: following radio at %s:%d" qso-hamlib-host qso-hamlib-port))
+
+(defun qso--hamlib-cancel-timer ()
+  "Stop the polling timer, if it is running."
+  (when qso--hamlib-timer
+    (cancel-timer qso--hamlib-timer)
+    (setq qso--hamlib-timer nil)))
+
+(defun qso-hamlib-stop ()
+  "Stop following the radio and close the connection to rigctld."
+  (interactive)
+  (qso--hamlib-cancel-timer)
+  (qso--hamlib-disconnect)
+  (setq qso--hamlib-pending "")
+  (setq qso--hamlib-freq nil)
+  (setq qso--hamlib-rig-mode nil)
+  (setq qso--hamlib-error nil)
+  (qso--hamlib-update-header-line))
+
+(defun qso-hamlib-toggle ()
+  "Turn radio synchronization on or off for the rest of this session."
+  (interactive)
+  (if qso--hamlib-timer
+      (progn
+        (qso-hamlib-stop)
+        (message "QSO: no longer following the radio"))
+    (qso-hamlib-start)))
+
+(defun qso-hamlib-sync-now ()
+  "Read the radio once, whether or not synchronization is running."
+  (interactive)
+  (unless (qso--hamlib-live-p)
+    (setq qso--hamlib-next-retry 0)
+    (qso--hamlib-connect))
+  (if (qso--hamlib-live-p)
+      (process-send-string qso--hamlib-process qso--hamlib-query)
+    (message "QSO: cannot reach rigctld at %s:%d%s"
+             qso-hamlib-host qso-hamlib-port
+             (if qso--hamlib-error (format " (%s)" qso--hamlib-error) ""))))
+
+(defvar qso-form-map
+  (let ((map (copy-keymap widget-keymap)))
+    (define-key map (kbd "C-c C-r") #'qso-hamlib-sync-now)
+    (define-key map (kbd "C-c C-t") #'qso-hamlib-toggle)
+    map)
+  "Keymap used in the QSO Log Entry form.")
+
+
 (defun qso-log-form ()
   "Create a dynamic QSO log form based on `qso-form-fields`."
   (interactive)
-  (switch-to-buffer "*QSO Log Entry*")
+  (switch-to-buffer qso-form-buffer-name)
   (kill-all-local-variables)
   (let ((inhibit-read-only t))
     (erase-buffer))
@@ -1105,7 +1533,10 @@
                              (let ((adif-string "")
 				   (call-value nil)
                                    (date-value "")
-                                   (time-value ""))
+                                   (time-value "")
+				   ;; Keep the radio poller out of the form while
+				   ;; the record is being assembled and written.
+				   (qso--hamlib-inhibit t))
                                ;; Collect data from each widget
                                (dolist (field-pair widget-alist)
                                  (let* ((field (nth 0 field-pair))
@@ -1140,7 +1571,7 @@
 				     (insert (format "%s\n" qso-adif-title))
 				     (insert "<ADIF_VER:5>3.1.4\n")
 				     (insert (format "<CREATED_TIMESTAMP:15>%s\n" timestamp))
-				     (insert "<PROGRAMID:16>Emacs-QSO-Logger\n<PROGRAMVERSION:5>1.0.6\n<EOH>\n"))
+				     (insert "<PROGRAMID:16>Emacs-QSO-Logger\n<PROGRAMVERSION:5>1.2.0\n<EOH>\n"))
 				   (write-region (point-min) (point-max) qso-adif-path t))
 				 (message "File created, header written to file"))
 			       ;; Check for duplicate callsign
@@ -1198,6 +1629,30 @@
 					   (setq adif-string
 						 (concat adif-string
 							 (format "<BAND:%d>%s" (length band) band)))))))
+				   ;; Record the radio's MODE and SUBMODE even when those fields are
+				   ;; not shown on the form.  SUBMODE is only meaningful alongside the
+				   ;; MODE it belongs to, so it is added only when the logged MODE is
+				   ;; the one the radio reports; if the operator typed a different
+				   ;; mode, that choice stands and neither field is touched.
+				   (when (and qso-hamlib-enable qso--hamlib-rig-mode)
+				     (let* ((mode-pair (qso--hamlib-adif-mode))
+				   	 (rig-mode (car mode-pair))
+				   	 (rig-submode (cdr mode-pair)))
+				       (when (and rig-mode (not (string-empty-p rig-mode)))
+				         (unless (string-match "<MODE:" adif-string)
+				   	(setq adif-string
+				   	      (concat adif-string
+				   		      (format "<MODE:%d>%s"
+				   			      (length rig-mode) rig-mode))))
+				         (when (and rig-submode
+				   		 (not (string-empty-p rig-submode))
+				   		 (not (string-match "<SUBMODE:" adif-string))
+				   		 (string-match "<MODE:[0-9]+>\\([^<]+\\)" adif-string)
+				   		 (equal (match-string 1 adif-string) rig-mode))
+				   	(setq adif-string
+				   	      (concat adif-string
+				   		      (format "<SUBMODE:%d>%s"
+				   			      (length rig-submode) rig-submode)))))))
 				   ;; Append date and time to the ADIF string
                                    (setq adif-string
                                          (concat adif-string
@@ -1220,7 +1675,8 @@
                              (let ((_adif-string "")
 				   (_call-value nil)
                                    (_date-value "")
-                                   (_time-value ""))
+                                   (_time-value "")
+				   (qso--hamlib-inhibit t))
                                ;; Collect data from each widget
                                (dolist (field-pair widget-alist)
                                  (let* ((_field (nth 0 field-pair))
@@ -1235,10 +1691,17 @@
     (widget-insert " ") ;; Add a space between buttons
     (widget-create 'push-button
                    :notify (lambda (&rest _)
-                             (kill-buffer "*QSO Log Entry*"))
+                             (kill-buffer qso-form-buffer-name))
                    "Quit")
-    (use-local-map widget-keymap)
+    (use-local-map qso-form-map)
     (widget-setup)
-    (widget-forward 1)))
+    (widget-forward 1)
+    ;; Remember the widgets so that the radio poller, which runs long after
+    ;; this function has returned, can reach them.
+    (setq-local qso--widget-alist widget-alist)
+    (setq-local qso--hamlib-written nil)
+    (add-hook 'kill-buffer-hook #'qso-hamlib-stop nil t)
+    (when qso-hamlib-enable
+      (qso-hamlib-start))))
 (provide 'qso)
 ;;; qso.el ends here
