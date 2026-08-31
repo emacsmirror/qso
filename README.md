@@ -19,6 +19,8 @@ Further processing of the logs can be done within Emacs or by importing the ADIF
 - Automatically populates BAND based on FREQ for commonly used bands, if otherwise left blank or not shown on the form
 - Optional live radio synchronization through Hamlib's rigctld: FREQ, MODE and SUBMODE follow the radio as the operator tunes or changes mode, and the current reading is shown in the header line above the form
 - Option to lookup callsign information and show the information (text) in another buffer (requires an internet connection)
+- Callsigns can be looked up at callook.info, HamQTH or QRZ.com, and the fields worth keeping can be filled in automatically, whether or not they appear on the form
+- Country, continent and CQ/ITU zones can be worked out from the callsign itself using a cty.dat country file, which covers the whole world with no network connection and no account
 - Option to check the log for duplicates before recording the QSO
 - Option to clear the form without saving the information (e.g. for incomplete QSOs)
 
@@ -42,10 +44,10 @@ FREQ, MODE and SUBMODE can be read directly from a transceiver through
 [Hamlib](https://hamlib.github.io/), so they follow the radio as you tune or change mode
 rather than being typed for every contact. This is off by default.
 
-1) Install Hamlib and start its `rigctld` daemon against your radio. Example (FXDX10):
+1) Install Hamlib and start its `rigctld` daemon against your radio, for example:
 
    ```
-   rigctld -m 1042 -r /dev/ttyUSB0 -s 38400
+   rigctld -m 3073 -r /dev/ttyUSB0 -s 38400
    ```
 
    Run `rigctl -l` to find the model number (`-m`) for your radio. `rigctld` is used rather
@@ -77,3 +79,44 @@ else, so guessing would file contacts under the wrong mode. If you work one digi
 whole session, set `PKTUSB` to that mode in the mode map and it will be filled in automatically.
 
 If `rigctld` is not running, the form works exactly as it always has and the header line says so.
+
+## Looking Up Callsigns (optional)
+"QSO Callsign Lookup Source" chooses where details come from:
+
+| Source | Coverage | Account |
+| --- | --- | --- |
+| [callook.info](https://callook.info) | United States only | none needed (the default) |
+| [HamQTH](https://www.hamqth.com) | Worldwide | free, registration required |
+| [QRZ.com](https://www.qrz.com) | Worldwide | paid XML subscription |
+
+Most countries outside the United States do not publish operator names and addresses at
+all, which is why worldwide lookup means using a community-maintained callbook rather than
+an official register.
+
+HamQTH and QRZ.com need a login. Put the username in "QSO Callsign Lookup User" and the
+password in `~/.authinfo.gpg`, so that it is never kept in your Emacs configuration:
+
+```
+machine www.hamqth.com login MYCALL password SECRET
+machine xmldata.qrz.com login MYCALL password SECRET
+```
+
+"QSO Callsign Lookup Fields" chooses what gets filled in — any of NAME, QTH, GRIDSQUARE,
+STATE, CNTY, COUNTRY, CQZ, ITUZ, CONT, LAT and LON. A field is filled whether or not it is
+on the form: anything not on the form is written straight into the ADIF record when the QSO
+is submitted. Which fields actually arrive depends on the source.
+
+Press `[Lookup]` to see what is known about a callsign, or `[Lookup & Autofill]` to also
+fill the chosen fields in. `C-c C-l` does the same from the keyboard.
+
+### Country and zones without an account
+Country, continent and CQ/ITU zones can be worked out from the callsign alone — for any
+callsign in the world, with no network connection and no account. Download a country file
+from [country-files.com](https://www.country-files.com), point "QSO Country File" at it,
+and leave "QSO Callsign Lookup DXCC" on.
+
+This is the only part of callsign lookup that works everywhere, so it is worth setting up
+even if you never use a callbook. It cannot supply an operator's name, only where the
+station is. Whatever the chosen source reports takes precedence over it, and if the file is
+missing or unreadable the rest of the form carries on as usual. Country files are updated
+as new prefixes are allocated, so it is worth refreshing the file occasionally.

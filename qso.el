@@ -4,7 +4,7 @@
 ;; Author: David Pentrack
 ;; URL: https://github.com/K6SM/Emacs-QSO-Logger
 ;; Keywords: lisp
-;; Version: 1.2.0
+;; Version: 1.3.0
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -62,6 +62,12 @@
 ;;   line above the form
 ;; - Option to lookup callsign information and show the information
 ;;   (text) in another buffer (requires an internet connection)
+;; - Callsigns can be looked up at callook.info, HamQTH or QRZ.com,
+;;   and the fields worth keeping can be filled in automatically,
+;;   whether or not they appear on the form
+;; - Country, continent and CQ/ITU zones can be worked out from the
+;;   callsign itself using a cty.dat country file, which covers the
+;;   whole world with no network connection and no account
 ;; - Option to check the log for duplicates before recording the QSO
 ;; - Option to clear the form without saving the information (e.g.
 ;;   for incomplete QSOs)
@@ -103,12 +109,51 @@
 ;; While synchronization is running, a field is updated only when it is
 ;; empty or still holds the value the radio last put there, so anything
 ;; typed by the operator is never overwritten.
+;;
+;; Looking Up Callsigns (optional)
+;;
+;; "QSO Callsign Lookup Source" chooses where details come from:
+;;
+;;   callook.info  United States only, no account needed.  This is the
+;;                 default, and it serves the FCC's public database.
+;;   HamQTH        Worldwide, free, but asks you to register.
+;;   QRZ.com       Worldwide, needs a paid XML subscription.
+;;
+;; Most countries outside the United States do not publish operator
+;; names and addresses at all, which is why a worldwide lookup means
+;; using a community-maintained callbook rather than an official
+;; register.
+;;
+;; HamQTH and QRZ.com need a login.  Put the username in "QSO Callsign
+;; Lookup User" and the password in ~/.authinfo.gpg, so that it is not
+;; kept in your Emacs configuration:
+;;
+;;   machine www.hamqth.com login MYCALL password SECRET
+;;   machine xmldata.qrz.com login MYCALL password SECRET
+;;
+;; "QSO Callsign Lookup Fields" chooses what to fill in.  A field is
+;; filled whether or not it is on the form: anything not on the form is
+;; written straight into the ADIF record when the QSO is submitted.
+;;
+;; Country, continent and CQ/ITU zones can also be worked out from the
+;; callsign alone, with no network connection and no account, for any
+;; callsign in the world.  Download a country file from
+;; https://www.country-files.com, point "QSO Country File" at it, and
+;; leave "QSO Callsign Lookup DXCC" on.  Whatever the chosen source
+;; reports takes precedence over this, and if the file is missing the
+;; rest of the form carries on as usual.
+;;
+;; Within the form, C-c C-l looks up the callsign that has been typed.
 
 ;;; Code:
 
 (require 'wid-edit)
 (require 'cl-lib)
 (require 'subr-x)
+(require 'seq)
+(require 'url)
+(require 'json)
+(require 'xml)
 
 (defgroup qso nil
   "Amateur radio QSO logging."
@@ -133,10 +178,96 @@
   :type 'boolean
   :group 'qso)
 
-(defcustom qso-call-lookup-autofill-name nil
-  "If non-nil, provide a callsign lookup/autofill-name function/button."
-  :tag "QSO Callsign Lookup Autofill Name"
+;; Declared ahead of the option itself so that a setting saved under the
+;; old name is carried over rather than quietly ignored.
+(define-obsolete-variable-alias 'qso-call-lookup-autofill-name
+  'qso-call-lookup-autofill "1.3.0")
+
+(defcustom qso-call-lookup-autofill nil
+  "If non-nil, provide a callsign lookup/autofill function/button."
+  :tag "QSO Callsign Lookup Autofill"
   :type 'boolean
+  :group 'qso)
+
+(defcustom qso-call-lookup-source 'callook
+  "Where to look up callsign details.
+
+callook.info serves the FCC's public database and needs no account, but
+it knows only United States callsigns.  Most other countries do not
+publish operator details at all, so worldwide lookup means using a
+community-maintained callbook, and those ask you to identify yourself.
+
+Whichever source is chosen, `qso-call-lookup-dxcc' can still name the
+country, continent and zones for any callsign in the world without any
+network connection at all."
+  :tag "QSO Callsign Lookup Source"
+  :type '(choice
+          (const :tag "callook.info (United States only, no account)" callook)
+          (const :tag "HamQTH (worldwide, free account required)" hamqth)
+          (const :tag "QRZ.com (worldwide, paid XML subscription)" qrz)
+          (const :tag "None (offline country lookup only)" nil))
+  :group 'qso)
+
+(defcustom qso-call-lookup-user ""
+  "Username or callsign used to log in to HamQTH or QRZ.com.
+
+The matching password is read with `auth-source', so it never has to be
+stored in your Emacs configuration.  Put a line like this one in
+~/.authinfo.gpg:
+
+    machine www.hamqth.com login MYCALL password SECRET
+
+using machine `xmldata.qrz.com' for QRZ.com instead."
+  :tag "QSO Callsign Lookup User"
+  :type 'string
+  :group 'qso)
+
+(defcustom qso-call-lookup-fields '(NAME)
+  "ADIF fields to fill in from a callsign lookup.
+
+A field is filled in whether or not it appears on the form: anything
+that is not on the form is written straight to the ADIF record when the
+QSO is submitted.  Which fields actually arrive depends on the source,
+and nothing is ever written over something you typed yourself."
+  :tag "QSO Callsign Lookup Fields"
+  :type '(set (const :tag "NAME (operator's name)" NAME)
+              (const :tag "QTH (city or town)" QTH)
+              (const :tag "GRIDSQUARE (Maidenhead locator)" GRIDSQUARE)
+              (const :tag "STATE (primary subdivision)" STATE)
+              (const :tag "CNTY (secondary subdivision)" CNTY)
+              (const :tag "COUNTRY (DXCC entity name)" COUNTRY)
+              (const :tag "CQZ (CQ zone)" CQZ)
+              (const :tag "ITUZ (ITU zone)" ITUZ)
+              (const :tag "CONT (continent)" CONT)
+              (const :tag "LAT (latitude)" LAT)
+              (const :tag "LON (longitude)" LON))
+  :group 'qso)
+
+(defcustom qso-call-lookup-timeout 10
+  "Seconds to wait for a callsign lookup before giving up."
+  :tag "QSO Callsign Lookup Timeout"
+  :type 'number
+  :group 'qso)
+
+(defcustom qso-call-lookup-dxcc t
+  "If non-nil, work out country, continent and zones from the callsign.
+
+This reads the country file named by `qso-cty-file' and needs no network
+connection and no account, so it covers every callsign in the world.  It
+cannot supply an operator's name, only where the station is."
+  :tag "QSO Callsign Lookup DXCC"
+  :type 'boolean
+  :group 'qso)
+
+(defcustom qso-cty-file nil
+  "Path to a cty.dat country file, or nil.
+
+Country files are published at https://www.country-files.com and are
+updated as new entities and prefixes are allocated.  When this is nil,
+or names a file that is not there, callsigns are simply not resolved to
+a country and the rest of the form carries on as usual."
+  :tag "QSO Country File"
+  :type '(choice (const :tag "None" nil) (file :tag "cty.dat"))
   :group 'qso)
 
 (defcustom qso-call-duplicates t
@@ -192,6 +323,16 @@ Run \"rigctl -l\" to find the model number for your radio."
 (defcustom qso-hamlib-reconnect-interval 5.0
   "Seconds to wait before retrying a failed connection to rigctld."
   :tag "QSO Hamlib Reconnect Interval"
+  :type 'number
+  :group 'qso)
+
+(defcustom qso-hamlib-connect-timeout 5.0
+  "Seconds to allow rigctld to answer a connection attempt.
+
+A host that is switched off or behind a firewall may never answer at
+all.  Connecting does not block Emacs, but without a deadline of this
+kind the form would sit indefinitely reporting that it is connecting."
+  :tag "QSO Hamlib Connect Timeout"
   :type 'number
   :group 'qso)
 
@@ -1158,6 +1299,13 @@ for a whole session can set PKTUSB to that mode here, for example
 (defvar qso--hamlib-next-retry 0
   "Time, as returned by `float-time', before which not to redial rigctld.")
 
+(defvar qso--hamlib-state 'idle
+  "How the connection to rigctld currently stands.
+One of `idle', `connecting', `connected' or `disconnected'.")
+
+(defvar qso--hamlib-connect-timer nil
+  "Timer that gives up on a connection attempt, or nil.")
+
 (defvar qso--hamlib-inhibit nil
   "When non-nil, leave the form alone even if a new reading arrives.
 Bound while a QSO is being submitted or cleared so that the poller
@@ -1174,39 +1322,93 @@ Used to tell a field the radio filled in from one the operator typed.")
 
 (defun qso--hamlib-live-p ()
   "Return non-nil when the connection to rigctld is usable."
-  (and qso--hamlib-process (process-live-p qso--hamlib-process)))
+  (and (eq qso--hamlib-state 'connected)
+       qso--hamlib-process
+       (process-live-p qso--hamlib-process)))
 
-(defun qso--hamlib-connect ()
-  "Open a connection to rigctld.  Return non-nil on success."
-  (condition-case err
-      (progn
-        (setq qso--hamlib-pending "")
-        (setq qso--hamlib-process
-              (open-network-stream "qso-rigctld" nil
-                                   qso-hamlib-host qso-hamlib-port))
-        (set-process-query-on-exit-flag qso--hamlib-process nil)
-        (set-process-coding-system qso--hamlib-process 'utf-8-unix 'utf-8-unix)
-        (set-process-filter qso--hamlib-process #'qso--hamlib-filter)
-        (set-process-sentinel qso--hamlib-process #'qso--hamlib-sentinel)
-        (setq qso--hamlib-error nil)
-        t)
-    (error
-     (setq qso--hamlib-process nil)
-     (setq qso--hamlib-error (error-message-string err))
-     nil)))
+(defun qso--hamlib-cancel-connect-timer ()
+  "Stop waiting for an answer to a connection attempt."
+  (when qso--hamlib-connect-timer
+    (cancel-timer qso--hamlib-connect-timer)
+    (setq qso--hamlib-connect-timer nil)))
 
-(defun qso--hamlib-disconnect ()
-  "Close the connection to rigctld, if any."
+(defun qso--hamlib-discard-process ()
+  "Drop the connection to rigctld without treating it as a failure."
+  (qso--hamlib-cancel-connect-timer)
   (when qso--hamlib-process
+    ;; Detach the callbacks first, so that deleting the process does not
+    ;; come back through the sentinel as a fresh failure.
+    (set-process-sentinel qso--hamlib-process #'ignore)
+    (set-process-filter qso--hamlib-process #'ignore)
     (ignore-errors (delete-process qso--hamlib-process)))
   (setq qso--hamlib-process nil))
 
-(defun qso--hamlib-sentinel (_process event)
-  "Note that the radio connection ended with EVENT."
-  (setq qso--hamlib-error (string-trim event))
+(defun qso--hamlib-failed (reason)
+  "Record REASON for losing the radio and arrange to try again later."
+  (qso--hamlib-discard-process)
+  (setq qso--hamlib-state 'disconnected)
+  (setq qso--hamlib-error reason)
+  (setq qso--hamlib-pending "")
   (setq qso--hamlib-freq nil)
   (setq qso--hamlib-rig-mode nil)
+  (setq qso--hamlib-next-retry (+ (float-time) qso-hamlib-reconnect-interval))
   (qso--hamlib-update-header-line))
+
+(defun qso--hamlib-connect ()
+  "Begin connecting to rigctld.
+
+This returns at once, whatever the state of the network.  The socket is
+opened with `:nowait', so a host that is switched off or firewalled is
+noticed by the sentinel or by `qso--hamlib-connect-timer' rather than by
+making Emacs wait out the operating system's TCP timeout."
+  (qso--hamlib-discard-process)
+  (setq qso--hamlib-pending "")
+  (setq qso--hamlib-state 'connecting)
+  (setq qso--hamlib-error nil)
+  (condition-case err
+      (setq qso--hamlib-process
+            (make-network-process :name "qso-rigctld"
+                                  :host qso-hamlib-host
+                                  :service qso-hamlib-port
+                                  :nowait t
+                                  :noquery t
+                                  :coding 'utf-8-unix
+                                  :filter #'qso--hamlib-filter
+                                  :sentinel #'qso--hamlib-sentinel))
+    (error
+     (setq qso--hamlib-process nil)
+     (qso--hamlib-failed (error-message-string err))))
+  ;; A host that drops packets outright never answers at all, so give the
+  ;; attempt a deadline of our own rather than waiting on the network stack.
+  (when (eq qso--hamlib-state 'connecting)
+    (setq qso--hamlib-connect-timer
+          (run-at-time qso-hamlib-connect-timeout nil
+                       #'qso--hamlib-connect-expired)))
+  (qso--hamlib-update-header-line))
+
+(defun qso--hamlib-connect-expired ()
+  "Give up on a connection attempt that rigctld never answered."
+  (setq qso--hamlib-connect-timer nil)
+  (when (eq qso--hamlib-state 'connecting)
+    (qso--hamlib-failed
+     (format "no answer within %g s" qso-hamlib-connect-timeout))))
+
+(defun qso--hamlib-disconnect ()
+  "Close the connection to rigctld, if any."
+  (qso--hamlib-discard-process)
+  (setq qso--hamlib-state 'idle))
+
+(defun qso--hamlib-sentinel (process event)
+  "Follow the connection to rigctld as it reports EVENT for PROCESS."
+  (when (eq process qso--hamlib-process)
+    (if (string-prefix-p "open" event)
+        (progn
+          (qso--hamlib-cancel-connect-timer)
+          (setq qso--hamlib-state 'connected)
+          (setq qso--hamlib-error nil)
+          (ignore-errors (process-send-string process qso--hamlib-query))
+          (qso--hamlib-update-header-line))
+      (qso--hamlib-failed (string-trim event)))))
 
 (defun qso--hamlib-filter (_process string)
   "Split STRING arriving from rigctld into whole lines and act on each."
@@ -1232,21 +1434,19 @@ Used to tell a field the radio filled in from one the operator typed.")
     (qso--hamlib-apply))))
 
 (defun qso--hamlib-poll ()
-  "Read the radio, reconnecting first if the link has dropped."
-  (if (qso--hamlib-live-p)
-      (condition-case err
-          (process-send-string qso--hamlib-process qso--hamlib-query)
-        (error
-         (setq qso--hamlib-error (error-message-string err))
-         (qso--hamlib-disconnect)))
-    ;; Redial no more often than `qso-hamlib-reconnect-interval', so that a
-    ;; radio that is switched off does not produce a stream of failures.
-    (when (>= (float-time) qso--hamlib-next-retry)
-      (setq qso--hamlib-next-retry
-            (+ (float-time) qso-hamlib-reconnect-interval))
-      (when (qso--hamlib-connect)
-        (ignore-errors
-          (process-send-string qso--hamlib-process qso--hamlib-query)))))
+  "Read the radio, redialing first if the link has dropped."
+  (cond
+   ((qso--hamlib-live-p)
+    (condition-case err
+        (process-send-string qso--hamlib-process qso--hamlib-query)
+      (error (qso--hamlib-failed (error-message-string err)))))
+   ;; An attempt already under way answers through the sentinel or times
+   ;; out on its own; starting another would just pile up sockets.
+   ((eq qso--hamlib-state 'connecting) nil)
+   ;; Redial no more often than `qso-hamlib-reconnect-interval', so that a
+   ;; radio that is switched off does not produce a stream of failures.
+   ((>= (float-time) qso--hamlib-next-retry)
+    (qso--hamlib-connect)))
   (qso--hamlib-update-header-line))
 
 (defun qso--hamlib-freq-string ()
@@ -1262,7 +1462,7 @@ determine that field."
     (let ((entry (assoc-string qso--hamlib-rig-mode qso-hamlib-mode-alist t)))
       (when entry (cons (nth 1 entry) (nth 2 entry))))))
 
-(defun qso--hamlib-widget-accepts-p (widget value)
+(defun qso--widget-accepts-p (widget value)
   "Return non-nil when WIDGET can hold VALUE.
 A menu-choice only offers a fixed set of values, so setting it to
 anything else would leave the form displaying a value the operator
@@ -1298,7 +1498,7 @@ untouched."
     (when (and widget
                value
                (or (string-empty-p value)
-                   (qso--hamlib-widget-accepts-p widget value)))
+                   (qso--widget-accepts-p widget value)))
       (let ((current (ignore-errors (widget-value widget)))
             (ours (cdr (assq field qso--hamlib-written))))
         (when (and (stringp current)
@@ -1334,6 +1534,9 @@ untouched."
 (defun qso--hamlib-header-string ()
   "Return the header line describing the radio, or nil to show none."
   (cond
+   ((eq qso--hamlib-state 'connecting)
+    (format " RADIO  connecting to rigctld at %s:%d..."
+            qso-hamlib-host qso-hamlib-port))
    ((not (qso--hamlib-live-p))
     (format " RADIO  no connection to rigctld at %s:%d%s"
             qso-hamlib-host qso-hamlib-port
@@ -1387,6 +1590,7 @@ untouched."
   (setq qso--hamlib-freq nil)
   (setq qso--hamlib-rig-mode nil)
   (setq qso--hamlib-error nil)
+  (setq qso--hamlib-next-retry 0)
   (qso--hamlib-update-header-line))
 
 (defun qso-hamlib-toggle ()
@@ -1401,19 +1605,483 @@ untouched."
 (defun qso-hamlib-sync-now ()
   "Read the radio once, whether or not synchronization is running."
   (interactive)
-  (unless (qso--hamlib-live-p)
-    (setq qso--hamlib-next-retry 0)
-    (qso--hamlib-connect))
   (if (qso--hamlib-live-p)
-      (process-send-string qso--hamlib-process qso--hamlib-query)
-    (message "QSO: cannot reach rigctld at %s:%d%s"
-             qso-hamlib-host qso-hamlib-port
-             (if qso--hamlib-error (format " (%s)" qso--hamlib-error) ""))))
+      (condition-case err
+          (process-send-string qso--hamlib-process qso--hamlib-query)
+        (error (qso--hamlib-failed (error-message-string err))))
+    ;; Connecting is asynchronous, so the reading is sent by the sentinel
+    ;; once the connection actually opens.
+    (setq qso--hamlib-next-retry 0)
+    (qso--hamlib-connect)
+    (message "QSO: contacting rigctld at %s:%d..."
+             qso-hamlib-host qso-hamlib-port)))
+
+;;; Callsign lookup
+
+;; Every source is reduced to the same thing: an alist of ADIF field names
+;; and values.  The form and the ADIF writer only ever see that alist, so
+;; adding a source means writing one function and nothing else.
+
+(defvar-local qso--lookup-extra nil
+  "Looked-up fields that are not on the form, as (FIELD . VALUE).
+Written into the ADIF record when the QSO is submitted.")
+
+(defvar-local qso--lookup-call nil
+  "Callsign that `qso--lookup-extra' belongs to.
+Keeps details of one station out of the record of another.")
+
+(defvar qso--lookup-session nil
+  "Cached login session for the current lookup source, or nil.")
+
+(defvar qso--lookup-session-time 0
+  "When `qso--lookup-session' was obtained, as `float-time'.")
+
+(defun qso--lookup-secret (host user)
+  "Return the password stored for USER at HOST, or nil."
+  (require 'auth-source)
+  (let ((found (car (auth-source-search :host host :user user :max 1))))
+    (when found
+      (let ((secret (plist-get found :secret)))
+        (if (functionp secret) (funcall secret) secret)))))
+
+(defun qso--lookup-http-get (url)
+  "Fetch URL and return its body as a string, or nil on any failure."
+  (let ((buffer (condition-case nil
+                    ;; The timeout argument arrived in Emacs 26; without it
+                    ;; a stalled server would hang Emacs until it gave up.
+                    (if (>= emacs-major-version 26)
+                        (url-retrieve-synchronously url t t qso-call-lookup-timeout)
+                      (url-retrieve-synchronously url t t))
+                  (error nil))))
+    (when (buffer-live-p buffer)
+      (unwind-protect
+          (with-current-buffer buffer
+            (goto-char (point-min))
+            (if (re-search-forward "^\r?$" nil t)
+                (forward-line 1)
+              (goto-char (point-min)))
+            (decode-coding-string
+             (buffer-substring-no-properties (point) (point-max)) 'utf-8))
+        (kill-buffer buffer)))))
+
+(defun qso--lookup-parse-xml (body)
+  "Parse BODY as XML and return its root node, or nil."
+  (ignore-errors
+    (with-temp-buffer
+      (insert body)
+      (car (xml-parse-region (point-min) (point-max))))))
+
+(defun qso--xml-text (node tag)
+  "Return the text of TAG inside NODE, or nil."
+  (let ((child (car (xml-get-children node tag))))
+    (when child
+      (let ((text (car (xml-node-children child))))
+        (when (stringp text)
+          (let ((trimmed (string-trim text)))
+            (unless (string-empty-p trimmed) trimmed)))))))
+
+(defun qso--lookup-clean (data)
+  "Drop empty entries from DATA, an alist of ADIF fields."
+  (let ((result '()))
+    (dolist (pair data (nreverse result))
+      (let ((value (cdr pair)))
+        (when (and value (stringp value) (not (string-empty-p (string-trim value))))
+          (push (cons (car pair) (string-trim value)) result))))))
+
+;;; Source: callook.info (United States)
+
+(defun qso--lookup-callook (call)
+  "Look CALL up at callook.info.  Return an alist of ADIF fields."
+  (let ((body (qso--lookup-http-get
+               (format "https://callook.info/%s/json" (url-hexify-string call)))))
+    (when body
+      (let* ((json-object-type 'alist)
+             (json-array-type 'list)
+             (json-key-type 'symbol)
+             (data (ignore-errors (json-read-from-string body))))
+        (when (equal (cdr (assq 'status data)) "VALID")
+          (let* ((address (cdr (assq 'address data)))
+                 (location (cdr (assq 'location data)))
+                 ;; "NEWINGTON, CT 06111" -- city before the comma, then
+                 ;; the two-letter state.
+                 (line2 (cdr (assq 'line2 address)))
+                 (city (when line2 (car (split-string line2 ","))))
+                 (state (when (and line2 (string-match ",\\s-*\\([A-Z]\\{2\\}\\)\\b" line2))
+                          (match-string 1 line2))))
+            (qso--lookup-clean
+             (list (cons 'NAME (cdr (assq 'name data)))
+                   (cons 'QTH city)
+                   (cons 'STATE state)
+                   (cons 'GRIDSQUARE (cdr (assq 'gridsquare location)))
+                   (cons 'LAT (cdr (assq 'latitude location)))
+                   (cons 'LON (cdr (assq 'longitude location)))
+                   (cons 'COUNTRY "United States of America")))))))))
+
+;;; Source: HamQTH (worldwide)
+
+(defun qso--lookup-hamqth-session ()
+  "Return a HamQTH session id, logging in if the cached one is stale."
+  ;; HamQTH sessions last about an hour; renewing a little early is
+  ;; cheaper than discovering the expiry in the middle of a contact.
+  (if (and qso--lookup-session
+           (< (- (float-time) qso--lookup-session-time) 3000))
+      qso--lookup-session
+    (let* ((user (string-trim (or qso-call-lookup-user "")))
+           (password (unless (string-empty-p user)
+                       (qso--lookup-secret "www.hamqth.com" user))))
+      (cond
+       ((string-empty-p user)
+        (message "QSO: set QSO Callsign Lookup User to your HamQTH login")
+        nil)
+       ((null password)
+        (message "QSO: no HamQTH password for %s in auth-source (~/.authinfo.gpg)" user)
+        nil)
+       (t
+        (let ((body (qso--lookup-http-get
+                     (format "https://www.hamqth.com/xml.php?u=%s&p=%s"
+                             (url-hexify-string user)
+                             (url-hexify-string password)))))
+          (when body
+            (let* ((root (qso--lookup-parse-xml body))
+                   (session (car (xml-get-children root 'session)))
+                   (id (and session (qso--xml-text session 'session_id)))
+                   (problem (and session (qso--xml-text session 'error))))
+              (cond
+               (id (setq qso--lookup-session id
+                         qso--lookup-session-time (float-time))
+                   id)
+               (problem (message "QSO: HamQTH: %s" problem) nil)
+               (t (message "QSO: HamQTH did not return a session") nil))))))))))
+
+(defun qso--lookup-hamqth (call)
+  "Look CALL up at HamQTH.  Return an alist of ADIF fields."
+  (let ((session (qso--lookup-hamqth-session)))
+    (when session
+      (let ((body (qso--lookup-http-get
+                   (format "https://www.hamqth.com/xml.php?id=%s&callsign=%s&prg=Emacs-QSO-Logger"
+                           (url-hexify-string session)
+                           (url-hexify-string (downcase call))))))
+        (when body
+          (let* ((root (qso--lookup-parse-xml body))
+                 (search (car (xml-get-children root 'search)))
+                 (problem (qso--xml-text root 'session)))
+            (cond
+             (search
+              (qso--lookup-clean
+               (list (cons 'NAME (or (qso--xml-text search 'adr_name)
+                                     (qso--xml-text search 'nick)))
+                     (cons 'QTH (or (qso--xml-text search 'qth)
+                                    (qso--xml-text search 'adr_city)))
+                     (cons 'GRIDSQUARE (qso--xml-text search 'grid))
+                     (cons 'STATE (qso--xml-text search 'us_state))
+                     (cons 'CNTY (qso--xml-text search 'us_county))
+                     (cons 'COUNTRY (qso--xml-text search 'country))
+                     (cons 'CQZ (qso--xml-text search 'cq))
+                     (cons 'ITUZ (qso--xml-text search 'itu))
+                     (cons 'CONT (qso--xml-text search 'continent))
+                     (cons 'LAT (qso--xml-text search 'latitude))
+                     (cons 'LON (qso--xml-text search 'longitude)))))
+             (t
+              ;; A rejected session id is worth one silent retry, since it
+              ;; simply means the hour ran out mid-session.
+              (when problem (setq qso--lookup-session nil))
+              nil))))))))
+
+;;; Source: QRZ.com (worldwide, subscription)
+
+(defun qso--lookup-qrz-session ()
+  "Return a QRZ.com session key, logging in if the cached one is stale."
+  (if (and qso--lookup-session
+           (< (- (float-time) qso--lookup-session-time) 3000))
+      qso--lookup-session
+    (let* ((user (string-trim (or qso-call-lookup-user "")))
+           (password (unless (string-empty-p user)
+                       (qso--lookup-secret "xmldata.qrz.com" user))))
+      (cond
+       ((string-empty-p user)
+        (message "QSO: set QSO Callsign Lookup User to your QRZ.com login")
+        nil)
+       ((null password)
+        (message "QSO: no QRZ.com password for %s in auth-source (~/.authinfo.gpg)" user)
+        nil)
+       (t
+        (let ((body (qso--lookup-http-get
+                     (format "https://xmldata.qrz.com/xml/current/?username=%s;password=%s;agent=Emacs-QSO-Logger"
+                             (url-hexify-string user)
+                             (url-hexify-string password)))))
+          (when body
+            (let* ((root (qso--lookup-parse-xml body))
+                   (session (car (xml-get-children root 'Session)))
+                   (key (and session (qso--xml-text session 'Key)))
+                   (problem (and session (qso--xml-text session 'Error))))
+              (cond
+               (key (setq qso--lookup-session key
+                          qso--lookup-session-time (float-time))
+                    key)
+               (problem (message "QSO: QRZ.com: %s" problem) nil)
+               (t (message "QSO: QRZ.com did not return a session key") nil))))))))))
+
+(defun qso--lookup-qrz (call)
+  "Look CALL up at QRZ.com.  Return an alist of ADIF fields."
+  (let ((session (qso--lookup-qrz-session)))
+    (when session
+      (let ((body (qso--lookup-http-get
+                   (format "https://xmldata.qrz.com/xml/current/?s=%s;callsign=%s"
+                           (url-hexify-string session)
+                           (url-hexify-string call)))))
+        (when body
+          (let* ((root (qso--lookup-parse-xml body))
+                 (entry (car (xml-get-children root 'Callsign)))
+                 (session-node (car (xml-get-children root 'Session)))
+                 (problem (and session-node (qso--xml-text session-node 'Error))))
+            (cond
+             (entry
+              (let ((first (qso--xml-text entry 'fname))
+                    (last (qso--xml-text entry 'name)))
+                (qso--lookup-clean
+                 (list (cons 'NAME (string-trim (concat (or first "") " " (or last ""))))
+                       (cons 'QTH (qso--xml-text entry 'addr2))
+                       (cons 'GRIDSQUARE (qso--xml-text entry 'grid))
+                       (cons 'STATE (qso--xml-text entry 'state))
+                       (cons 'CNTY (qso--xml-text entry 'county))
+                       (cons 'COUNTRY (qso--xml-text entry 'country))
+                       (cons 'CQZ (qso--xml-text entry 'cqzone))
+                       (cons 'ITUZ (qso--xml-text entry 'ituzone))
+                       (cons 'LAT (qso--xml-text entry 'lat))
+                       (cons 'LON (qso--xml-text entry 'lon))))))
+             (t
+              (when problem
+                (setq qso--lookup-session nil)
+                (message "QSO: QRZ.com: %s" problem))
+              nil))))))))
+
+;;; Offline country lookup from a cty.dat country file
+
+(defvar qso--cty-prefixes nil
+  "Hash of callsign prefix to entity plist, or nil when nothing is loaded.")
+
+(defvar qso--cty-exact nil
+  "Hash of whole callsigns to entity plists, from cty.dat \"=\" entries.")
+
+(defvar qso--cty-loaded-file nil
+  "The country file currently in memory, as (PATH . MODIFICATION-TIME).")
+
+(defun qso--cty-strip-modifiers (token)
+  "Remove cty.dat's per-prefix overrides from TOKEN, leaving the prefix."
+  (let ((prefix token))
+    (dolist (pattern '("([^)]*)" "\\[[^]]*\\]" "<[^>]*>" "{[^}]*}" "~[^~]*~"))
+      (setq prefix (replace-regexp-in-string pattern "" prefix)))
+    (string-trim prefix)))
+
+(defun qso--cty-load ()
+  "Read `qso-cty-file' into memory.  Return non-nil when usable."
+  (let* ((file (and qso-cty-file (expand-file-name qso-cty-file)))
+         (stamp (and file (file-readable-p file)
+                     (cons file (nth 5 (file-attributes file))))))
+    (cond
+     ;; Forget which file was loaded as well as its contents, so that a
+     ;; country file that reappears later is read again rather than being
+     ;; mistaken for the one already in memory.
+     ((null stamp)
+      (setq qso--cty-prefixes nil qso--cty-exact nil qso--cty-loaded-file nil)
+      nil)
+     ((equal stamp qso--cty-loaded-file) (and qso--cty-prefixes t))
+     (t
+      (let ((prefixes (make-hash-table :test 'equal))
+            (exact (make-hash-table :test 'equal)))
+        (condition-case err
+            (with-temp-buffer
+              (insert-file-contents file)
+              (goto-char (point-min))
+              ;; Records are separated by semicolons.  The first line holds
+              ;; the entity's details, the rest a comma-separated list of
+              ;; the prefixes that belong to it.
+              (while (re-search-forward "\\([^;]+\\);" nil t)
+                (let* ((record (match-string 1))
+                       (lines (split-string record "\n" t))
+                       (fields (split-string (or (car lines) "") ":"))
+                       (tokens (split-string
+                                (mapconcat #'identity (cdr lines) "") "," t)))
+                  (when (>= (length fields) 8)
+                    (let ((entity (list :country (string-trim (nth 0 fields))
+                                        :cqz (string-trim (nth 1 fields))
+                                        :ituz (string-trim (nth 2 fields))
+                                        :cont (string-trim (nth 3 fields)))))
+                      (dolist (token tokens)
+                        (let ((entry entity)
+                              (bare (qso--cty-strip-modifiers token)))
+                          ;; A prefix may override the entity's zones.
+                          (when (string-match "(\\([0-9]+\\))" token)
+                            (setq entry (plist-put (copy-sequence entry)
+                                                   :cqz (match-string 1 token))))
+                          (when (string-match "\\[\\([0-9]+\\)\\]" token)
+                            (setq entry (plist-put (copy-sequence entry)
+                                                   :ituz (match-string 1 token))))
+                          (cond
+                           ((string-empty-p bare) nil)
+                           ;; "=CALL" names one station, not a prefix.
+                           ((string-prefix-p "=" bare)
+                            (puthash (upcase (substring bare 1)) entry exact))
+                           (t (puthash (upcase bare) entry prefixes))))))))))
+          (error
+           (message "QSO: cannot read country file %s: %s"
+                    file (error-message-string err))
+           (setq prefixes nil)))
+        (if (and prefixes (> (hash-table-count prefixes) 0))
+            (progn (setq qso--cty-prefixes prefixes
+                         qso--cty-exact exact
+                         qso--cty-loaded-file stamp)
+                   t)
+          (setq qso--cty-prefixes nil qso--cty-exact nil qso--cty-loaded-file nil)
+          nil))))))
+
+(defconst qso--cty-plain-suffixes
+  '("P" "M" "MM" "AM" "QRP" "A" "B" "LH" "R" "T" "J")
+  "Callsign suffixes that say nothing about where a station is.")
+
+(defun qso--cty-base-call (call)
+  "Return the part of CALL that decides which entity it belongs to.
+
+This is a rule of thumb rather than a law: a lone digit is an area
+within the same country, common suffixes such as /P or /MM are ignored,
+and otherwise the shorter part carries the country prefix, as in both
+DL/K6SM and K6SM/DL."
+  (let ((parts (split-string (upcase call) "/" t)))
+    (cond
+     ((null parts) (upcase call))
+     ((null (cdr parts)) (car parts))
+     (t
+      (let* ((meaningful (or (seq-remove
+                              (lambda (part) (member part qso--cty-plain-suffixes))
+                              parts)
+                             parts))
+             (located (or (seq-remove
+                           (lambda (part) (string-match-p "\\`[0-9]\\'" part))
+                           meaningful)
+                          meaningful)))
+        (if (null (cdr located))
+            (car located)
+          (car (sort (copy-sequence located)
+                     (lambda (a b) (< (length a) (length b)))))))))))
+
+(defun qso--cty-lookup (call)
+  "Return the entity plist for CALL from the country file, or nil."
+  (when (qso--cty-load)
+    (let ((whole (upcase (string-trim call))))
+      (or (gethash whole qso--cty-exact)
+          (let ((base (qso--cty-base-call whole)))
+            (or (gethash base qso--cty-exact)
+                ;; Longest prefix wins, so K1 beats K.
+                (let ((length (length base))
+                      (hit nil))
+                  (while (and (> length 0) (null hit))
+                    (setq hit (gethash (substring base 0 length) qso--cty-prefixes))
+                    (setq length (1- length)))
+                  hit)))))))
+
+(defun qso--lookup-dxcc (call)
+  "Return country and zone fields for CALL from the country file."
+  (when qso-call-lookup-dxcc
+    (let ((entity (qso--cty-lookup call)))
+      (when entity
+        (qso--lookup-clean
+         (list (cons 'COUNTRY (plist-get entity :country))
+               (cons 'CQZ (plist-get entity :cqz))
+               (cons 'ITUZ (plist-get entity :ituz))
+               (cons 'CONT (plist-get entity :cont))))))))
+
+;;; Putting a lookup together and using the result
+
+(defun qso--lookup-fetch (call)
+  "Gather everything known about CALL as an alist of ADIF fields.
+
+The country file supplies a floor that works offline for any callsign;
+whatever the chosen source knows is laid over the top of it."
+  (let ((offline (qso--lookup-dxcc call))
+        (online (pcase qso-call-lookup-source
+                  ('callook (qso--lookup-callook call))
+                  ('hamqth (qso--lookup-hamqth call))
+                  ('qrz (qso--lookup-qrz call))
+                  (_ nil)))
+        (result '()))
+    (dolist (pair (append offline online))
+      (setq result (cons pair (assq-delete-all (car pair) result))))
+    (nreverse result)))
+
+(defun qso--lookup-show (call data)
+  "Display DATA for CALL in the *Callsign Info* buffer."
+  (with-current-buffer (get-buffer-create "*Callsign Info*")
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (if (null data)
+          (insert (format "Nothing found for %s.\n" (upcase call)))
+        (insert (format "%s\n\n" (upcase call)))
+        (dolist (pair data)
+          (insert (format "%-12s %s\n" (symbol-name (car pair)) (cdr pair)))))
+      (goto-char (point-min)))
+    (display-buffer (current-buffer))))
+
+(defun qso--lookup-autofill (call data)
+  "Put DATA for CALL into the form, and keep the rest for the ADIF record.
+Return the list of fields that were filled in."
+  (setq qso--lookup-call (upcase (string-trim call)))
+  (setq qso--lookup-extra nil)
+  (let ((filled '())
+        (touched nil))
+    (dolist (field qso-call-lookup-fields)
+      (let ((value (cdr (assq field data))))
+        (when value
+          (let ((widget (nth 1 (assq field qso--widget-alist))))
+            (cond
+             ((and widget (qso--widget-accepts-p widget value))
+              (widget-value-set widget value)
+              (setq touched t)
+              (push field filled))
+             (widget
+              ;; On the form but unable to hold this value, as with a
+              ;; menu-choice that does not offer it.
+              (message "QSO: %s cannot be set to %S from the form" field value))
+             (t
+              ;; Not on the form, so carry it to the record instead.
+              (push (cons field value) qso--lookup-extra)
+              (push field filled)))))))
+    (when touched (widget-setup))
+    (nreverse filled)))
+
+(defun qso--lookup-call-value ()
+  "Return the callsign currently typed into the form, or nil."
+  (let* ((widget (nth 1 (assq 'CALL qso--widget-alist)))
+         (value (and widget (string-trim (or (widget-value widget) "")))))
+    (unless (or (null value) (string-empty-p value)) value)))
+
+(defun qso-call-lookup-at-point (&optional autofill)
+  "Look up the callsign on the form and show what is known about it.
+With AUTOFILL non-nil, also fill in `qso-call-lookup-fields'."
+  (interactive "P")
+  (let ((call (qso--lookup-call-value)))
+    (cond
+     ((null call) (message "QSO: no callsign entered"))
+     (t
+      (message "QSO: looking up %s..." (upcase call))
+      (let ((data (qso--lookup-fetch call)))
+        (qso--lookup-show call data)
+        (cond
+         ((null data)
+          (message "QSO: nothing found for %s" (upcase call)))
+         (autofill
+          (let ((filled (qso--lookup-autofill call data)))
+            (if filled
+                (message "QSO: filled in %s"
+                         (mapconcat #'symbol-name filled ", "))
+              (message "QSO: nothing to fill in for %s" (upcase call)))))
+         (t (message "QSO: %d field(s) found for %s"
+                     (length data) (upcase call)))))))))
 
 (defvar qso-form-map
   (let ((map (copy-keymap widget-keymap)))
     (define-key map (kbd "C-c C-r") #'qso-hamlib-sync-now)
     (define-key map (kbd "C-c C-t") #'qso-hamlib-toggle)
+    (define-key map (kbd "C-c C-l") #'qso-call-lookup-at-point)
     map)
   "Keymap used in the QSO Log Entry form.")
 
@@ -1438,92 +2106,15 @@ untouched."
             (setq widget-alist (append widget-alist (list (list field widget clear-after-submit))))
 	    (when (eq field 'CALL)
 	      (when qso-call-lookup
-		(widget-create 'push-button
-			       :notify (lambda (&rest _)
-					 (let ((_adif-string "")
-					       (call-value nil)
-					       (_date-value "")
-					       (_time-value ""))
-					   ;; Collect data from each widget
-					   (dolist (field-pair widget-alist)
-					     (let* ((field (nth 0 field-pair))
-						    (widget (nth 1 field-pair))
-						    (_clear-after-submit (nth 2 field-pair))
-						    (value (widget-value widget)))
-					       (setq value (string-trim value)) ;; Remove whitespace
-					       ;; Store the CALL value for duplicate check
-					       (when (eq field 'CALL)
-						 (setq call-value value))))
-					   (let* ((url (format "https://callook.info/%s/text" call-value))
-						  (buffer (url-retrieve-synchronously url)))
-					     (if buffer
-						 (with-current-buffer buffer
-						   (goto-char (point-min))
-						   (re-search-forward "^$" nil 'move)
-						   (forward-line)
-						   (let ((content (buffer-substring (point) (point-max))))
-						     (with-current-buffer (get-buffer-create "*Callsign Info*")
-						       (erase-buffer)
-						       (insert content)
-						       (goto-char (point-min))
-						       (display-buffer (current-buffer))))))))
-				       (message "Callsign Info Acquired"))
-			       "Lookup"))
-	      (when qso-call-lookup-autofill-name
-		(widget-create 'push-button
-			       :notify (lambda (&rest _)
-					 (let ((_adif-string "")
-					       (call-value nil)
-					       (_date-value "")
-					       (_time-value ""))
-					   ;; Collect data from each widget
-					   (dolist (field-pair widget-alist)
-					     (let* ((field (nth 0 field-pair))
-						    (widget (nth 1 field-pair))
-						    (_clear-after-submit (nth 2 field-pair))
-						    (value (widget-value widget)))
-					       (setq value (string-trim value)) ;; Remove whitespace
-					       ;; Store the CALL value for duplicate check
-					       (when (eq field 'CALL)
-						 (setq call-value value))))
-					   (let* ((url (format "https://callook.info/%s/text" call-value))
-						  (buffer (url-retrieve-synchronously url)))
-					     (if buffer
-						 (with-current-buffer buffer
-						   (goto-char (point-min))
-						   (re-search-forward "^$" nil 'move)
-						   (forward-line)
-						   (let ((content (buffer-substring (point) (point-max))))
-						     (with-current-buffer (get-buffer-create "*Callsign Info*")
-						       (erase-buffer)
-						       (insert content)
-						       (goto-char (point-min))
-						       (display-buffer (current-buffer))))))))
-					 (let ((info-buffer (get-buffer "*Callsign Info*")))
-					   (if (null info-buffer)
-					       (message "Error: No *Callsign Info* buffer found.")
-					     (with-current-buffer info-buffer
-					       (if (string-match-p "Invalid callsign!" (buffer-string))
-						   (message "Error: Invalid callsign - Name field not populated.")
-						 (let ((name-value nil))
-						   (goto-char (point-min))
-						   (if (re-search-forward "^Name \\+ Address:$" nil t)
-						       (progn
-							 (forward-line 1)
-							 (setq name-value
-							       (string-trim
-								(buffer-substring
-								 (line-beginning-position)
-								 (line-end-position)))))
-						     (message "Error: Could not find \"Name + Address:\" in *Callsign Info*."))
-						   (when name-value
-						     (let ((name-widget (nth 1 (assq 'NAME widget-alist))))
-						       (if (null name-widget)
-							   (message "Error: No \"Name\" field in QSO Log Entry - Name not populated.")
-							 (widget-value-set name-widget name-value)
-							 (widget-setup)
-							 (message "Name autofilled: %s" name-value))))))))))
-			       "Lookup/Autofill Name"))
+	        (widget-create 'push-button
+	      		 :notify (lambda (&rest _)
+	      			   (qso-call-lookup-at-point nil))
+	      		 "Lookup"))
+	      (when qso-call-lookup-autofill
+	        (widget-create 'push-button
+	      		 :notify (lambda (&rest _)
+	      			   (qso-call-lookup-at-point t))
+	      		 "Lookup & Autofill"))
 	      (widget-insert "\n"))))))
 
     ;; Add submit, clear and quit buttons
@@ -1571,7 +2162,7 @@ untouched."
 				     (insert (format "%s\n" qso-adif-title))
 				     (insert "<ADIF_VER:5>3.1.4\n")
 				     (insert (format "<CREATED_TIMESTAMP:15>%s\n" timestamp))
-				     (insert "<PROGRAMID:16>Emacs-QSO-Logger\n<PROGRAMVERSION:5>1.2.0\n<EOH>\n"))
+				     (insert "<PROGRAMID:16>Emacs-QSO-Logger\n<PROGRAMVERSION:5>1.3.0\n<EOH>\n"))
 				   (write-region (point-min) (point-max) qso-adif-path t))
 				 (message "File created, header written to file"))
 			       ;; Check for duplicate callsign
@@ -1653,6 +2244,19 @@ untouched."
 				   	      (concat adif-string
 				   		      (format "<SUBMODE:%d>%s"
 				   			      (length rig-submode) rig-submode)))))))
+				   ;; Fields found by a callsign lookup that are not on the form.
+				   ;; They are tied to the callsign they were fetched for, so details
+				   ;; of one station cannot end up in the record of another.
+				   (when (and qso--lookup-extra
+				   	   call-value
+				   	   (equal (upcase call-value) qso--lookup-call))
+				     (dolist (pair qso--lookup-extra)
+				       (let ((tag (symbol-name (car pair)))
+				   	  (value (cdr pair)))
+				         (unless (string-match (format "<%s:" (regexp-quote tag)) adif-string)
+				   	(setq adif-string
+				   	      (concat adif-string
+				   		      (format "<%s:%d>%s" tag (length value) value)))))))
 				   ;; Append date and time to the ADIF string
                                    (setq adif-string
                                          (concat adif-string
@@ -1667,6 +2271,9 @@ untouched."
                                    (write-region (point-min) (point-max) qso-adif-path t))))
 			     (goto-char (point-min))
 			     (widget-forward 1)
+			     ;; The looked-up details belong to the contact just logged.
+			     (setq qso--lookup-extra nil)
+			     (setq qso--lookup-call nil)
 			     (message "QSO logged!"))
 		   "Submit")
     (widget-insert " ") ;; Add a space between buttons
@@ -1685,6 +2292,8 @@ untouched."
                                         (_value (widget-value widget)))
                                      (when clear-after-submit
                                        (widget-value-set widget "")))))
+			     (setq qso--lookup-extra nil)
+			     (setq qso--lookup-call nil)
 			     (goto-char (point-min))
 			     (widget-forward 1))
                    "Clear")
