@@ -4,7 +4,7 @@
 ;; Author: David Pentrack
 ;; URL: https://github.com/K6SM/Emacs-QSO-Logger
 ;; Keywords: comm, hamradio, adif, logging
-;; Version: 1.3.5
+;; Version: 1.3.6
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -2334,6 +2334,46 @@ overlay, and nowhere else.  Composing `qso-command-map' in front of
 `widget-field-keymap' puts the form's own commands ahead of the field's
 editing keys while leaving those keys intact.")
 
+(defun qso--format-with-sample (format field)
+  "Return FORMAT with FIELD's name marked as the widget's sample.
+
+widget.el draws whatever lies between %{ and %} in the widget's
+`:sample-face', and it puts that back every time the widget redraws
+itself.  A menu-choice redraws completely when a value is chosen, taking
+with it any colour applied to the buffer afterwards, so the field name
+is marked here and the colouring left to widget.el.
+
+A format that says nothing about the field, or that already has a
+sample of its own, is returned unchanged."
+  (let ((name (symbol-name field)))
+    (if (and (stringp format)
+             (not (string-match-p "%{" format))
+             ;; Matched without the syntax table's help, so that ADDRESS
+             ;; is not found inside ADDRESS_INTL.
+             (string-match (concat "\\(?:\\`\\|[^A-Za-z0-9_]\\)\\("
+                                   (regexp-quote name)
+                                   "\\)\\(?:[^A-Za-z0-9_]\\|\\'\\)")
+                           format))
+        (concat (substring format 0 (match-beginning 1))
+                "%{" name "%}"
+                (substring format (match-end 1)))
+      format)))
+
+(defun qso--definition-args (field definition)
+  "Return DEFINITION's arguments for FIELD, its name marked as a sample.
+
+The definition itself is left alone; only a copy is altered, because
+`qso-form-field-definitions' is shared by every form."
+  (let* ((args (copy-sequence (cdr definition)))
+         (cell args))
+    ;; Walk the leading plist only.  A menu-choice's item specifications
+    ;; follow it and are not keyword and value pairs.
+    (while (and cell (keywordp (car cell)) (cdr cell))
+      (when (eq (car cell) :format)
+        (setcar (cdr cell) (qso--format-with-sample (cadr cell) field)))
+      (setq cell (cddr cell)))
+    args))
+
 (defconst qso--empty-choice '(item :format "%t\n" :tag "-")
   "What a menu-choice field shows before anything has been chosen.
 
@@ -2517,11 +2557,18 @@ Everything bound outside the fields, in full:
                  ;; local map, so a binding kept only in `qso-form-map'
                  ;; would be lost wherever the operator types; RET tells
                  ;; a button from a field by itself, in `qso-activate'.
-                 (extra (append (list :keymap qso-field-keymap)
+                 (extra (append (list :keymap qso-field-keymap
+                                      ;; The colour of the field name,
+                                      ;; which widget.el then maintains
+                                      ;; across every redraw of the
+                                      ;; widget; see `qso--format-with-sample'.
+                                      :sample-face 'qso-label)
                                 (when (eq type 'menu-choice)
                                   (list :void qso--empty-choice))))
                  (widget (apply #'widget-create type
-                                (append extra (cdr field-definition)))))
+                                (append extra
+                                        (qso--definition-args
+                                         field field-definition)))))
             (setq widget-alist (append widget-alist (list (list field widget clear-after-submit))))
 	    (when (eq field 'CALL)
 	      (when qso-call-lookup
@@ -2582,7 +2629,7 @@ Everything bound outside the fields, in full:
 				     (insert (format "%s\n" qso-adif-title))
 				     (insert "<ADIF_VER:5>3.1.4\n")
 				     (insert (format "<CREATED_TIMESTAMP:15>%s\n" timestamp))
-				     (insert "<PROGRAMID:16>Emacs-QSO-Logger\n<PROGRAMVERSION:5>1.3.5\n<EOH>\n"))
+				     (insert "<PROGRAMID:16>Emacs-QSO-Logger\n<PROGRAMVERSION:5>1.3.6\n<EOH>\n"))
 				   (write-region (point-min) (point-max) qso-adif-path t))
 				 (message "File created, header written to file"))
 			       ;; Check for duplicate callsign
