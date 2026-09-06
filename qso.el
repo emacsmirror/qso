@@ -3,8 +3,8 @@
 ;; Copyright (C) 2026, David Pentrack
 ;; Author: David Pentrack
 ;; URL: https://github.com/K6SM/Emacs-QSO-Logger
-;; Keywords: lisp
-;; Version: 1.3.0
+;; Keywords: comm, hamradio, adif, logging
+;; Version: 1.3.5
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -106,6 +106,11 @@
 ;;  4) Within the form, C-c C-r reads the radio once and C-c C-t turns
 ;;     synchronization on or off.
 ;;
+;; The radio's line at the top of the form is headed by the model name
+;; the radio reports, so it reads "IC-7300  localhost:4532  connected"
+;; rather than "Rig".  A rigctld too old to answer for its capabilities
+;; leaves the line saying "Rig", as before.
+;;
 ;; While synchronization is running, a field is updated only when it is
 ;; empty or still holds the value the radio last put there, so anything
 ;; typed by the operator is never overwritten.
@@ -154,6 +159,7 @@
 (require 'url)
 (require 'json)
 (require 'xml)
+(require 'easymenu)
 
 (defgroup qso nil
   "Amateur radio QSO logging."
@@ -336,13 +342,17 @@ kind the form would sit indefinitely reporting that it is connecting."
   :type 'number
   :group 'qso)
 
-(defcustom qso-hamlib-header-line t
-  "If non-nil, show the radio's frequency and mode in the form's header line.
+(define-obsolete-variable-alias 'qso-hamlib-header-line
+  'qso-hamlib-status-line "1.3.1")
 
-The header line reports the radio directly and is never edited, so it
-stays accurate even when the operator has typed over the FREQ or MODE
-field."
-  :tag "QSO Hamlib Header Line"
+(defcustom qso-hamlib-status-line t
+  "If non-nil, show the state of the radio link at the top of the form.
+
+The line reports the radio directly and is never edited, so it stays
+accurate even where the operator has typed over the FREQ or MODE field.
+It says the same thing, in the same colours, as the line `ham-rig'
+shows at the top of its own panel."
+  :tag "QSO Hamlib Status Line"
   :type 'boolean
   :group 'qso)
 
@@ -571,22 +581,22 @@ for a whole session can set PKTUSB to that mode here, for example
   :group 'qso)
 
 (defvar qso-form-field-definitions
-  '((ADDRESS . (editable-field :format "ADDRESS: %v\n" :size 40 :value ""))
-    (ADDRESS_INTL . (editable-field :format "ADDRESS_INTL: %v\n" :size 40 :value ""))
-    (AGE . (editable-field :format "AGE: %v\n" :size 3 :value ""))
-    (ALTITUDE . (editable-field :format "ALTITUDE: %vm\n" :size 4 :value ""))
-    (ANT_AZ . (editable-field :format "ANT_AZ: %v\n" :size 3 :value ""))
-    (ANT_EL . (editable-field :format "ANT_EL: %v\n" :size 3 :value ""))
-    (ANT_PATH . (menu-choice :tag "ANT_PATH" :format "ANT_PATH: %[%v%]" :value ""
+  '((ADDRESS . (editable-field :format "  ADDRESS      %v\n" :size 40 :value ""))
+    (ADDRESS_INTL . (editable-field :format "  ADDRESS_INTL %v\n" :size 40 :value ""))
+    (AGE . (editable-field :format "  AGE          %v\n" :size 3 :value ""))
+    (ALTITUDE . (editable-field :format "  ALTITUDE     %vm\n" :size 4 :value ""))
+    (ANT_AZ . (editable-field :format "  ANT_AZ       %v\n" :size 3 :value ""))
+    (ANT_EL . (editable-field :format "  ANT_EL       %v\n" :size 3 :value ""))
+    (ANT_PATH . (menu-choice :tag "ANT_PATH" :format "  ANT_PATH     %[%v%]" :value ""
 			 (item :tag "Short Path" :value "S")
 			 (item :tag "Grayline" :value "G")
 			 (item :tag "Long Path" :value "L")
 			 (item :tag "Other" :value "O")))
-    (ARRL_SECT . (editable-field :format "ARRL_SECT: %v\n" :size 3 :value ""))
-    (AWARD_GRANTED . (editable-field :format "AWARD_GRANTED: %v\n" :size 40 :value ""))
-    (AWARD_SUBMITTED . (editable-field :format "AWARD_SUBMITTED: %v\n" :size 40 :value ""))
-    (A_INDEX . (editable-field :format "A_INDEX: %v\n" :size 3 :value ""))
-    (BAND . (menu-choice :tag "BAND" :format "BAND: %[%v%]" :value ""
+    (ARRL_SECT . (editable-field :format "  ARRL_SECT    %v\n" :size 3 :value ""))
+    (AWARD_GRANTED . (editable-field :format "  AWARD_GRANTED %v\n" :size 40 :value ""))
+    (AWARD_SUBMITTED . (editable-field :format "  AWARD_SUBMITTED %v\n" :size 40 :value ""))
+    (A_INDEX . (editable-field :format "  A_INDEX      %v\n" :size 3 :value ""))
+    (BAND . (menu-choice :tag "BAND" :format "  BAND         %[%v%]" :value ""
 			 (item :tag "2190m" :value "2190m")
 			 (item :tag "630m" :value "630m")
 			 (item :tag "560m" :value "560m")
@@ -620,18 +630,18 @@ for a whole session can set PKTUSB to that mode here, for example
 			 (item :tag "2mm" :value "2mm")
 			 (item :tag "1mm" :value "1mm")
 			 (item :tag "submm" :value "submm")))
-    (BAND_RX . (editable-field :format "BAND_RX: %v\n" :size 40 :value ""))
-    (CALL . (editable-field :format "CALL: %v " :size 10 :value ""))
-    (CHECK . (editable-field :format "CHECK: %v\n" :size 40 :value ""))
-    (CLASS . (editable-field :format "CLASS: %v\n" :size 10 :value ""))
-    (CLUBLOG_QSO_UPLOAD_DATE . (editable-field :format "CLUBLOG_QSO_UPLOAD_DATE: %v\n" :size 40 :value ""))
-    (CLUBLOG_QSO_UPLOAD_STATUS . (editable-field :format "CLUBLOG_QSO_UPLOAD_STATUS: %v\n" :size 40 :value ""))
-    (CNTY . (editable-field :format "CNTY: %v\n" :size 40 :value ""))
-    (COMMENT . (editable-field :format "COMMENT: %v\n" :size 37 :value ""))
-    (COMMENT_INTL . (editable-field :format "COMMENT_INTL: %v\n" :size 32 :value ""))
-    (CONT . (editable-field :format "CONT: %v\n" :size 2 :value ""))
-    (CONTACTED_OP . (editable-field :format "CONTACTED_OP: %v\n" :size 32 :value ""))
-    (CONTEST_ID . (menu-choice :tag "CONTEST_ID" :format "CONTEST_ID: %[%v%]" :value ""
+    (BAND_RX . (editable-field :format "  BAND_RX      %v\n" :size 40 :value ""))
+    (CALL . (editable-field :format "  CALL         %v " :size 10 :value ""))
+    (CHECK . (editable-field :format "  CHECK        %v\n" :size 40 :value ""))
+    (CLASS . (editable-field :format "  CLASS        %v\n" :size 10 :value ""))
+    (CLUBLOG_QSO_UPLOAD_DATE . (editable-field :format "  CLUBLOG_QSO_UPLOAD_DATE %v\n" :size 40 :value ""))
+    (CLUBLOG_QSO_UPLOAD_STATUS . (editable-field :format "  CLUBLOG_QSO_UPLOAD_STATUS %v\n" :size 40 :value ""))
+    (CNTY . (editable-field :format "  CNTY         %v\n" :size 40 :value ""))
+    (COMMENT . (editable-field :format "  COMMENT      %v\n" :size 37 :value ""))
+    (COMMENT_INTL . (editable-field :format "  COMMENT_INTL %v\n" :size 32 :value ""))
+    (CONT . (editable-field :format "  CONT         %v\n" :size 2 :value ""))
+    (CONTACTED_OP . (editable-field :format "  CONTACTED_OP %v\n" :size 32 :value ""))
+    (CONTEST_ID . (menu-choice :tag "CONTEST_ID" :format "  CONTEST_ID   %[%v%]" :value ""
 			       (item :tag "PODXS Great Pumpkin Sprint" :value "070-160M-SPRINT")
 			       (item :tag "PODXS Three Day Weekend" :value "070-3-DAY")
 			       (item :tag "PODXS 31 Flavors" :value "070-31-FLAVORS")
@@ -865,46 +875,46 @@ for a whole session can set PKTUSB to that mode here, for example
 			       (item :tag "Mexico International Contest (RTTY)" :value "XE-INTL-RTTY")
 			       (item :tag "YODX HF contest" :value "YOHFDX")
 			       (item :tag "YU DX Contest" :value "YUDXC")))
-    (COUNTRY . (editable-field :format "COUNTRY: %v\n" :size 37 :value ""))
-    (COUNTRY_INTL . (editable-field :format "COUNTRY_INTL: %v\n" :size 32 :value ""))
-    (CQZ . (editable-field :format "CQZ: %v\n" :size 40 :value ""))
-    (CREDIT_SUBMITTED . (editable-field :format "CREDIT_SUBMITTED: %v\n" :size 40 :value ""))
-    (CREDIT_GRANTED . (editable-field :format "CREDIT_GRANTED: %v\n" :size 40 :value ""))
-    (DARC_DOK . (editable-field :format "DARC_DOK: %v\n" :size 40 :value ""))
-    (DISTANCE . (editable-field :format "DISTANCE: %v\n" :size 40 :value ""))
-    (DXCC . (editable-field :format "DXCC: %v\n" :size 40 :value ""))
-    (EMAIL . (editable-field :format "EMAIL: %v\n" :size 39 :value ""))
-    (EQ_CALL . (editable-field :format "EQ_CALL: %v\n" :size 40 :value ""))
-    (EQSL_QSLRDATE . (editable-field :format "EQSL_QSLRDATE: %v\n" :size 40 :value ""))
-    (EQSL_QSLSDATE . (editable-field :format "EQSL_QSLSDATE: %v\n" :size 40 :value ""))
-    (EQSL_QSL_RCVD . (editable-field :format "EQSL_QSL_RCVD: %v\n" :size 40 :value ""))
-    (EQSL_QSL_SENT . (editable-field :format "EQSL_QSL_SENT: %v\n" :size 40 :value ""))
-    (FISTS . (editable-field :format "FISTS: %v\n" :size 40 :value ""))
-    (FISTS_CC . (editable-field :format "FISTS_CC: %v\n" :size 40 :value ""))
-    (FORCE_INIT . (editable-field :format "FORCE_INIT: %v\n" :size 40 :value ""))
-    (FREQ . (editable-field :format "FREQ: %vMHz\n" :size 10 :value ""))
-    (FREQ_RX . (editable-field :format "FREQ_RX: %vMHz\n" :size 10 :value ""))
-    (GRIDSQUARE . (editable-field :format "GRIDSQUARE: %v\n" :size 6 :value ""))
-    (GRIDSQUARE_EXT . (editable-field :format "GRIDSQUARE_EXT: %v\n" :size 6 :value ""))
-    (GUEST_OP . (editable-field :format "GUEST_OP: %v\n" :size 36 :value ""))
-    (HAMLOGEU_QSO_UPLOAD_DATE . (editable-field :format "HAMLOGEU_QSO_UPLOAD_DATE: %v\n" :size 40 :value ""))
-    (HAMLOGEU_QSO_UPLOAD_STATUS . (editable-field :format "HAMLOGEU_QSO_UPLOAD_STATUS: %v\n" :size 40 :value ""))
-    (HAMQTH_QSO_UPLOAD_DATE . (editable-field :format "HAMQTH_QSO_UPLOAD_DATE: %v\n" :size 40 :value ""))
-    (HAMQTH_QSO_UPLOAD_STATUS . (editable-field :format "HAMQTH_QSO_UPLOAD_STATUS: %v\n" :size 40 :value ""))
-    (HRDLOG_QSO_UPLOAD_DATE . (editable-field :format "HRDLOG_QSO_UPLOAD_DATE: %v\n" :size 40 :value ""))
-    (HRDLOG_QSO_UPLOAD_STATUS . (editable-field :format "HRDLOG_QSO_UPLOAD_STATUS: %v\n" :size 40 :value ""))
-    (IOTA . (editable-field :format "IOTA: %v\n" :size 40 :value ""))
-    (IOTA_ISLAND_ID . (editable-field :format "IOTA_ISLAND_ID: %v\n" :size 40 :value ""))
-    (ITUZ . (editable-field :format "ITUZ: %v\n" :size 40 :value ""))
-    (K_INDEX . (editable-field :format "K_INDEX: %v\n" :size 3 :value ""))
-    (LAT . (editable-field :format "LAT: %v\n" :size 11 :value ""))
-    (LON . (editable-field :format "LON: %v\n" :size 11 :value ""))
-    (LOTW_QSLRDATE . (editable-field :format "LOTW_QSLRDATE: %v\n" :size 40 :value ""))
-    (LOTW_QSLSDATE . (editable-field :format "LOTW_QSLSDATE: %v\n" :size 40 :value ""))
-    (LOTW_QSL_RCVD . (editable-field :format "LOTW_QSL_RCVD: %v\n" :size 40 :value ""))
-    (LOTW_QSL_SENT . (editable-field :format "LOTW_QSL_SENT: %v\n" :size 40 :value ""))
-    (MAX_BURSTS . (editable-field :format "MAX_BURSTS: %v\n" :size 40 :value ""))
-    (MODE . (menu-choice :tag "MODE" :format "MODE: %[%v%]" :value ""
+    (COUNTRY . (editable-field :format "  COUNTRY      %v\n" :size 37 :value ""))
+    (COUNTRY_INTL . (editable-field :format "  COUNTRY_INTL %v\n" :size 32 :value ""))
+    (CQZ . (editable-field :format "  CQZ          %v\n" :size 40 :value ""))
+    (CREDIT_SUBMITTED . (editable-field :format "  CREDIT_SUBMITTED %v\n" :size 40 :value ""))
+    (CREDIT_GRANTED . (editable-field :format "  CREDIT_GRANTED %v\n" :size 40 :value ""))
+    (DARC_DOK . (editable-field :format "  DARC_DOK     %v\n" :size 40 :value ""))
+    (DISTANCE . (editable-field :format "  DISTANCE     %v\n" :size 40 :value ""))
+    (DXCC . (editable-field :format "  DXCC         %v\n" :size 40 :value ""))
+    (EMAIL . (editable-field :format "  EMAIL        %v\n" :size 39 :value ""))
+    (EQ_CALL . (editable-field :format "  EQ_CALL      %v\n" :size 40 :value ""))
+    (EQSL_QSLRDATE . (editable-field :format "  EQSL_QSLRDATE %v\n" :size 40 :value ""))
+    (EQSL_QSLSDATE . (editable-field :format "  EQSL_QSLSDATE %v\n" :size 40 :value ""))
+    (EQSL_QSL_RCVD . (editable-field :format "  EQSL_QSL_RCVD %v\n" :size 40 :value ""))
+    (EQSL_QSL_SENT . (editable-field :format "  EQSL_QSL_SENT %v\n" :size 40 :value ""))
+    (FISTS . (editable-field :format "  FISTS        %v\n" :size 40 :value ""))
+    (FISTS_CC . (editable-field :format "  FISTS_CC     %v\n" :size 40 :value ""))
+    (FORCE_INIT . (editable-field :format "  FORCE_INIT   %v\n" :size 40 :value ""))
+    (FREQ . (editable-field :format "  FREQ         %v MHz\n" :size 10 :value ""))
+    (FREQ_RX . (editable-field :format "  FREQ_RX      %v MHz\n" :size 10 :value ""))
+    (GRIDSQUARE . (editable-field :format "  GRIDSQUARE   %v\n" :size 6 :value ""))
+    (GRIDSQUARE_EXT . (editable-field :format "  GRIDSQUARE_EXT %v\n" :size 6 :value ""))
+    (GUEST_OP . (editable-field :format "  GUEST_OP     %v\n" :size 36 :value ""))
+    (HAMLOGEU_QSO_UPLOAD_DATE . (editable-field :format "  HAMLOGEU_QSO_UPLOAD_DATE %v\n" :size 40 :value ""))
+    (HAMLOGEU_QSO_UPLOAD_STATUS . (editable-field :format "  HAMLOGEU_QSO_UPLOAD_STATUS %v\n" :size 40 :value ""))
+    (HAMQTH_QSO_UPLOAD_DATE . (editable-field :format "  HAMQTH_QSO_UPLOAD_DATE %v\n" :size 40 :value ""))
+    (HAMQTH_QSO_UPLOAD_STATUS . (editable-field :format "  HAMQTH_QSO_UPLOAD_STATUS %v\n" :size 40 :value ""))
+    (HRDLOG_QSO_UPLOAD_DATE . (editable-field :format "  HRDLOG_QSO_UPLOAD_DATE %v\n" :size 40 :value ""))
+    (HRDLOG_QSO_UPLOAD_STATUS . (editable-field :format "  HRDLOG_QSO_UPLOAD_STATUS %v\n" :size 40 :value ""))
+    (IOTA . (editable-field :format "  IOTA         %v\n" :size 40 :value ""))
+    (IOTA_ISLAND_ID . (editable-field :format "  IOTA_ISLAND_ID %v\n" :size 40 :value ""))
+    (ITUZ . (editable-field :format "  ITUZ         %v\n" :size 40 :value ""))
+    (K_INDEX . (editable-field :format "  K_INDEX      %v\n" :size 3 :value ""))
+    (LAT . (editable-field :format "  LAT          %v\n" :size 11 :value ""))
+    (LON . (editable-field :format "  LON          %v\n" :size 11 :value ""))
+    (LOTW_QSLRDATE . (editable-field :format "  LOTW_QSLRDATE %v\n" :size 40 :value ""))
+    (LOTW_QSLSDATE . (editable-field :format "  LOTW_QSLSDATE %v\n" :size 40 :value ""))
+    (LOTW_QSL_RCVD . (editable-field :format "  LOTW_QSL_RCVD %v\n" :size 40 :value ""))
+    (LOTW_QSL_SENT . (editable-field :format "  LOTW_QSL_SENT %v\n" :size 40 :value ""))
+    (MAX_BURSTS . (editable-field :format "  MAX_BURSTS   %v\n" :size 40 :value ""))
+    (MODE . (menu-choice :tag "MODE" :format "  MODE         %[%v%]" :value ""
 			  (item :tag "AM" :value "AM")
 			  (item :tag "ARDOP" :value "ARDOP")
 			  (item :tag "ATV" :value "ATV")
@@ -951,55 +961,55 @@ for a whole session can set PKTUSB to that mode here, for example
 			  (item :tag "VOI" :value "VOI")
 			  (item :tag "WINMOR" :value "WINMOR")
 			  (item :tag "WSPR" :value "WSPR")))
-    (MS_SHOWER . (editable-field :format "MS_SHOWER: %v\n" :size 40 :value ""))
-    (MY_ALTITUDE . (editable-field :format "MY_ALTITUDE: %v\n" :size 40 :value ""))
-    (MY_ANTENNA . (editable-field :format "MY_ANTENNA: %v\n" :size 40 :value ""))
-    (MY_ARRL_SECT . (editable-field :format "MY_ARRL_SECT: %v\n" :size 3 :value ""))
-    (MY_CITY . (editable-field :format "MY_CITY: %v\n" :size 40 :value ""))
-    (MY_CITY_INTL . (editable-field :format "MY_CITY_INTL: %v\n" :size 40 :value ""))
-    (MY_CNTY . (editable-field :format "MY_CNTY: %v\n" :size 40 :value ""))
-    (MY_COUNTRY . (editable-field :format "MY_COUNTRY: %v\n" :size 40 :value ""))
-    (MY_COUNTRY_INTL . (editable-field :format "MY_COUNTRY_INTL: %v\n" :size 40 :value ""))
-    (MY_CQ_ZONE . (editable-field :format "MY_CQ_ZONE: %v\n" :size 40 :value ""))
-    (MY_DXCC . (editable-field :format "MY_DXCC: %v\n" :size 40 :value ""))
-    (MY_FISTS . (editable-field :format "MY_FISTS: %v\n" :size 40 :value ""))
-    (MY_GRIDSQUARE . (editable-field :format "MY_GRIDSQUARE: %v\n" :size 40 :value ""))
-    (MY_GRIDSQUARE_EXT . (editable-field :format "MY_GRIDSQUARE_EXT: %v\n" :size 40 :value ""))
-    (MY_IOTA . (editable-field :format "MY_IOTA: %v\n" :size 40 :value ""))
-    (MY_IOTA_ISLAND_ID . (editable-field :format "MY_IOTA_ISLAND_ID: %v\n" :size 40 :value ""))
-    (MY_ITU_ZONE . (editable-field :format "MY_ITU_ZONE: %v\n" :size 40 :value ""))
-    (MY_LAT . (editable-field :format "MY_LAT: %v\n" :size 40 :value ""))
-    (MY_LON . (editable-field :format "MY_LON: %v\n" :size 40 :value ""))
-    (MY_NAME . (editable-field :format "MY_NAME: %v\n" :size 40 :value ""))
-    (MY_NAME_INTL . (editable-field :format "MY_NAME_INTL: %v\n" :size 40 :value ""))
-    (MY_POSTAL_CODE . (editable-field :format "MY_POSTAL_CODE: %v\n" :size 40 :value ""))
-    (MY_POSTAL_CODE_INTL . (editable-field :format "MY_POSTAL_CODE_INTL: %v\n" :size 40 :value ""))
-    (MY_POTA_REF . (editable-field :format "MY_POTA_REF: %v\n" :size 40 :value ""))
-    (MY_RIG . (editable-field :format "MY_RIG: %v\n" :size 40 :value ""))
-    (MY_RIG_INTL . (editable-field :format "MY_RIG_INTL: %v\n" :size 40 :value ""))
-    (MY_SIG . (editable-field :format "MY_SIG: %v\n" :size 40 :value ""))
-    (MY_SIG_INTL . (editable-field :format "MY_SIG_INTL: %v\n" :size 40 :value ""))
-    (MY_SIG_INFO . (editable-field :format "MY_SIG_INFO: %v\n" :size 40 :value ""))
-    (MY_SIG_INFO_INTL . (editable-field :format "MY_SIG_INFO_INTL: %v\n" :size 40 :value ""))
-    (MY_SOTA_REF . (editable-field :format "MY_SOTA_REF: %v\n" :size 40 :value ""))
-    (MY_STATE . (editable-field :format "MY_STATE: %v\n" :size 40 :value ""))
-    (MY_STREET . (editable-field :format "MY_STREET: %v\n" :size 40 :value ""))
-    (MY_STREET_INTL . (editable-field :format "MY_STREET_INTL: %v\n" :size 40 :value ""))
-    (MY_USACA_COUNTIES . (editable-field :format "MY_USACA_COUNTIES: %v\n" :size 40 :value ""))
-    (MY_VUCC_GRIDS . (editable-field :format "MY_VUCC_GRIDS: %v\n" :size 40 :value ""))
-    (MY_WWFF_REF . (editable-field :format "MY_WWFF_REF: %v\n" :size 40 :value ""))
-    (NAME . (editable-field :format "NAME: %v\n" :size 40 :value ""))
-    (NAME_INTL . (editable-field :format "NAME_INTL: %v\n" :size 40 :value ""))
-    (NOTES . (editable-field :format "NOTES: %v\n" :size 40 :value ""))
-    (NOTES_INTL . (editable-field :format "NOTES_INTL: %v\n" :size 40 :value ""))
-    (NR_BURSTS . (editable-field :format "NR_BURSTS: %v\n" :size 40 :value ""))
-    (NR_PINGS . (editable-field :format "NR_PINGS: %v\n" :size 40 :value ""))
-;    (OPERATOR . (editable-field :format "OPERATOR: %v\n" :size 40 :value ""))
-    (OWNER_CALLSIGN . (editable-field :format "OWNER_CALLSIGN: %v\n" :size 10 :value ""))
-    (PFX . (editable-field :format "PFX: %v\n" :size 40 :value ""))
-    (POTA_REF . (editable-field :format "POTA_REF: %v\n" :size 40 :value ""))
-    (PRECEDENCE . (editable-field :format "PRECEDENCE: %v\n" :size 40 :value ""))
-    (PROP_MODE . (menu-choice :tag "PROP_MODE" :format "PROP_MODE: %[%v%]" :value ""
+    (MS_SHOWER . (editable-field :format "  MS_SHOWER    %v\n" :size 40 :value ""))
+    (MY_ALTITUDE . (editable-field :format "  MY_ALTITUDE  %v\n" :size 40 :value ""))
+    (MY_ANTENNA . (editable-field :format "  MY_ANTENNA   %v\n" :size 40 :value ""))
+    (MY_ARRL_SECT . (editable-field :format "  MY_ARRL_SECT %v\n" :size 3 :value ""))
+    (MY_CITY . (editable-field :format "  MY_CITY      %v\n" :size 40 :value ""))
+    (MY_CITY_INTL . (editable-field :format "  MY_CITY_INTL %v\n" :size 40 :value ""))
+    (MY_CNTY . (editable-field :format "  MY_CNTY      %v\n" :size 40 :value ""))
+    (MY_COUNTRY . (editable-field :format "  MY_COUNTRY   %v\n" :size 40 :value ""))
+    (MY_COUNTRY_INTL . (editable-field :format "  MY_COUNTRY_INTL %v\n" :size 40 :value ""))
+    (MY_CQ_ZONE . (editable-field :format "  MY_CQ_ZONE   %v\n" :size 40 :value ""))
+    (MY_DXCC . (editable-field :format "  MY_DXCC      %v\n" :size 40 :value ""))
+    (MY_FISTS . (editable-field :format "  MY_FISTS     %v\n" :size 40 :value ""))
+    (MY_GRIDSQUARE . (editable-field :format "  MY_GRIDSQUARE %v\n" :size 40 :value ""))
+    (MY_GRIDSQUARE_EXT . (editable-field :format "  MY_GRIDSQUARE_EXT %v\n" :size 40 :value ""))
+    (MY_IOTA . (editable-field :format "  MY_IOTA      %v\n" :size 40 :value ""))
+    (MY_IOTA_ISLAND_ID . (editable-field :format "  MY_IOTA_ISLAND_ID %v\n" :size 40 :value ""))
+    (MY_ITU_ZONE . (editable-field :format "  MY_ITU_ZONE  %v\n" :size 40 :value ""))
+    (MY_LAT . (editable-field :format "  MY_LAT       %v\n" :size 40 :value ""))
+    (MY_LON . (editable-field :format "  MY_LON       %v\n" :size 40 :value ""))
+    (MY_NAME . (editable-field :format "  MY_NAME      %v\n" :size 40 :value ""))
+    (MY_NAME_INTL . (editable-field :format "  MY_NAME_INTL %v\n" :size 40 :value ""))
+    (MY_POSTAL_CODE . (editable-field :format "  MY_POSTAL_CODE %v\n" :size 40 :value ""))
+    (MY_POSTAL_CODE_INTL . (editable-field :format "  MY_POSTAL_CODE_INTL %v\n" :size 40 :value ""))
+    (MY_POTA_REF . (editable-field :format "  MY_POTA_REF  %v\n" :size 40 :value ""))
+    (MY_RIG . (editable-field :format "  MY_RIG       %v\n" :size 40 :value ""))
+    (MY_RIG_INTL . (editable-field :format "  MY_RIG_INTL  %v\n" :size 40 :value ""))
+    (MY_SIG . (editable-field :format "  MY_SIG       %v\n" :size 40 :value ""))
+    (MY_SIG_INTL . (editable-field :format "  MY_SIG_INTL  %v\n" :size 40 :value ""))
+    (MY_SIG_INFO . (editable-field :format "  MY_SIG_INFO  %v\n" :size 40 :value ""))
+    (MY_SIG_INFO_INTL . (editable-field :format "  MY_SIG_INFO_INTL %v\n" :size 40 :value ""))
+    (MY_SOTA_REF . (editable-field :format "  MY_SOTA_REF  %v\n" :size 40 :value ""))
+    (MY_STATE . (editable-field :format "  MY_STATE     %v\n" :size 40 :value ""))
+    (MY_STREET . (editable-field :format "  MY_STREET    %v\n" :size 40 :value ""))
+    (MY_STREET_INTL . (editable-field :format "  MY_STREET_INTL %v\n" :size 40 :value ""))
+    (MY_USACA_COUNTIES . (editable-field :format "  MY_USACA_COUNTIES %v\n" :size 40 :value ""))
+    (MY_VUCC_GRIDS . (editable-field :format "  MY_VUCC_GRIDS %v\n" :size 40 :value ""))
+    (MY_WWFF_REF . (editable-field :format "  MY_WWFF_REF  %v\n" :size 40 :value ""))
+    (NAME . (editable-field :format "  NAME         %v\n" :size 40 :value ""))
+    (NAME_INTL . (editable-field :format "  NAME_INTL    %v\n" :size 40 :value ""))
+    (NOTES . (editable-field :format "  NOTES        %v\n" :size 40 :value ""))
+    (NOTES_INTL . (editable-field :format "  NOTES_INTL   %v\n" :size 40 :value ""))
+    (NR_BURSTS . (editable-field :format "  NR_BURSTS    %v\n" :size 40 :value ""))
+    (NR_PINGS . (editable-field :format "  NR_PINGS     %v\n" :size 40 :value ""))
+;    (OPERATOR . (editable-field :format "  OPERATOR     %v\n" :size 40 :value ""))
+    (OWNER_CALLSIGN . (editable-field :format "  OWNER_CALLSIGN %v\n" :size 10 :value ""))
+    (PFX . (editable-field :format "  PFX          %v\n" :size 40 :value ""))
+    (POTA_REF . (editable-field :format "  POTA_REF     %v\n" :size 40 :value ""))
+    (PRECEDENCE . (editable-field :format "  PRECEDENCE   %v\n" :size 40 :value ""))
+    (PROP_MODE . (menu-choice :tag "PROP_MODE" :format "  PROP_MODE    %[%v%]" :value ""
 			      (item :tag "Aircraft Scatter" :value "AS")
 			      (item :tag "Aurora-E" :value "AUE")
 			      (item :tag "Aurora" :value "AUR")
@@ -1020,47 +1030,47 @@ for a whole session can set PKTUSB to that mode here, for example
 			      (item :tag "Satellite" :value "SAT")
 			      (item :tag "Trans-equatorial" :value "TEP")
 			      (item :tag "Tropospheric ducting" :value "TR")))
-    (PUBLIC_KEY . (editable-field :format "PUBLIC_KEY: %v\n" :size 40 :value ""))
-    (QRZCOM_QSO_UPLOAD_DATE . (editable-field :format "QRZCOM_QSO_UPLOAD_DATE: %v\n" :size 40 :value ""))
-    (QRZCOM_QSO_UPLOAD_STATUS . (editable-field :format "QRZCOM_QSO_UPLOAD_STATUS: %v\n" :size 40 :value ""))
-    (QSLMSG . (editable-field :format "QSLMSG: %v\n" :size 40 :value ""))
-    (QSLMSG_INTL . (editable-field :format "QSLMSG_INTL: %v\n" :size 40 :value ""))
-    (QSLRDATE . (editable-field :format "QSLRDATE: %v\n" :size 8 :value ""))
-    (QSLSDATE . (editable-field :format "QSLSDATE: %v\n" :size 8 :value ""))
-    (QSL_RCVD . (editable-field :format "QSL_RCVD: %v\n" :size 1 :value ""))
-    (QSL_RCVD_VIA . (editable-field :format "QSL_RCVD_VIA: %v\n" :size 1 :value ""))
-    (QSL_SENT . (editable-field :format "QSL_SENT: %v\n" :size 1 :value ""))
-    (QSL_SENT_VIA . (editable-field :format "QSL_SENT_VIA: %v\n" :size 1 :value ""))
-    (QSL_VIA . (editable-field :format "QSL_VIA: %v\n" :size 1 :value ""))
-    (QSO_COMPLETE . (editable-field :format "QSO_COMPLETE: %v\n" :size 3 :value ""))
-    (QSO_DATE . (editable-field :format "QSO_DATE: %v\n" :size 8 :value ""))
-    (QSO_DATE_OFF . (editable-field :format "QSO_DATE_OFF: %v\n" :size 8 :value ""))
-    (QSO_RANDOM . (editable-field :format "QSO_RANDOM: %v\n" :size 1 :value ""))
-    (QTH . (editable-field :format "QTH: %v\n" :size 40 :value ""))
-    (QTH_INTL . (editable-field :format "QTH_INTL: %v\n" :size 40 :value ""))
-    (REGION . (editable-field :format "REGION: %v\n" :size 40 :value ""))
-    (RIG . (editable-field :format "RIG: %v\n" :size 40 :value ""))
-    (RIG_INTL . (editable-field :format "RIG_INTL: %v\n" :size 40 :value ""))
-    (RST_RCVD . (editable-field :format "RST_RCVD: %v\n" :size 6 :value ""))
-    (RST_SENT . (editable-field :format "RST_SENT: %v\n" :size 6 :value ""))
-    (RX_PWR . (editable-field :format "RX_PWR: %vW\n" :size 6 :value ""))
-    (SAT_MODE . (editable-field :format "SAT_MODE: %v\n" :size 40 :value ""))
-    (SAT_NAME . (editable-field :format "SAT_NAME: %v\n" :size 40 :value ""))
-    (SFI . (editable-field :format "SFI: %v\n" :size 40 :value ""))
-    (SIG . (editable-field :format "SIG: %v\n" :size 40 :value ""))
-    (SIG_INTL . (editable-field :format "SIG_INTL: %v\n" :size 40 :value ""))
-    (SIG_INFO . (editable-field :format "SIG_INFO: %v\n" :size 40 :value ""))
-    (SIG_INFO_INTL . (editable-field :format "SIG_INFO_INTL: %v\n" :size 40 :value ""))
-    (SILENT_KEY . (editable-field :format "SILENT_KEY: %v\n" :size 1 :value ""))
-    (SKCC . (editable-field :format "SKCC: %v\n" :size 40 :value ""))
-    (SOTA_REF . (editable-field :format "SOTA_REF: %v\n" :size 40 :value ""))
-    (SRX . (editable-field :format "SRX: %v\n" :size 6 :value ""))
-    (SRX_STRING . (editable-field :format "SRX_STRING: %v\n" :size 40 :value ""))
-    (STATE . (editable-field :format "STATE: %v\n" :size 40 :value ""))
-    (STATION_CALLSIGN . (editable-field :format "STATION_CALLSIGN: %v\n" :size 40 :value ""))
-    (STX . (editable-field :format "STX: %v\n" :size 40 :value ""))
-    (STX_STRING . (editable-field :format "STX_STRING: %v\n" :size 40 :value ""))
-    (SUBMODE . (menu-choice :format "SUBMODE: %[%v%]" :value ""
+    (PUBLIC_KEY . (editable-field :format "  PUBLIC_KEY   %v\n" :size 40 :value ""))
+    (QRZCOM_QSO_UPLOAD_DATE . (editable-field :format "  QRZCOM_QSO_UPLOAD_DATE %v\n" :size 40 :value ""))
+    (QRZCOM_QSO_UPLOAD_STATUS . (editable-field :format "  QRZCOM_QSO_UPLOAD_STATUS %v\n" :size 40 :value ""))
+    (QSLMSG . (editable-field :format "  QSLMSG       %v\n" :size 40 :value ""))
+    (QSLMSG_INTL . (editable-field :format "  QSLMSG_INTL  %v\n" :size 40 :value ""))
+    (QSLRDATE . (editable-field :format "  QSLRDATE     %v\n" :size 8 :value ""))
+    (QSLSDATE . (editable-field :format "  QSLSDATE     %v\n" :size 8 :value ""))
+    (QSL_RCVD . (editable-field :format "  QSL_RCVD     %v\n" :size 1 :value ""))
+    (QSL_RCVD_VIA . (editable-field :format "  QSL_RCVD_VIA %v\n" :size 1 :value ""))
+    (QSL_SENT . (editable-field :format "  QSL_SENT     %v\n" :size 1 :value ""))
+    (QSL_SENT_VIA . (editable-field :format "  QSL_SENT_VIA %v\n" :size 1 :value ""))
+    (QSL_VIA . (editable-field :format "  QSL_VIA      %v\n" :size 1 :value ""))
+    (QSO_COMPLETE . (editable-field :format "  QSO_COMPLETE %v\n" :size 3 :value ""))
+    (QSO_DATE . (editable-field :format "  QSO_DATE     %v\n" :size 8 :value ""))
+    (QSO_DATE_OFF . (editable-field :format "  QSO_DATE_OFF %v\n" :size 8 :value ""))
+    (QSO_RANDOM . (editable-field :format "  QSO_RANDOM   %v\n" :size 1 :value ""))
+    (QTH . (editable-field :format "  QTH          %v\n" :size 40 :value ""))
+    (QTH_INTL . (editable-field :format "  QTH_INTL     %v\n" :size 40 :value ""))
+    (REGION . (editable-field :format "  REGION       %v\n" :size 40 :value ""))
+    (RIG . (editable-field :format "  RIG          %v\n" :size 40 :value ""))
+    (RIG_INTL . (editable-field :format "  RIG_INTL     %v\n" :size 40 :value ""))
+    (RST_RCVD . (editable-field :format "  RST_RCVD     %v\n" :size 6 :value ""))
+    (RST_SENT . (editable-field :format "  RST_SENT     %v\n" :size 6 :value ""))
+    (RX_PWR . (editable-field :format "  RX_PWR       %vW\n" :size 6 :value ""))
+    (SAT_MODE . (editable-field :format "  SAT_MODE     %v\n" :size 40 :value ""))
+    (SAT_NAME . (editable-field :format "  SAT_NAME     %v\n" :size 40 :value ""))
+    (SFI . (editable-field :format "  SFI          %v\n" :size 40 :value ""))
+    (SIG . (editable-field :format "  SIG          %v\n" :size 40 :value ""))
+    (SIG_INTL . (editable-field :format "  SIG_INTL     %v\n" :size 40 :value ""))
+    (SIG_INFO . (editable-field :format "  SIG_INFO     %v\n" :size 40 :value ""))
+    (SIG_INFO_INTL . (editable-field :format "  SIG_INFO_INTL %v\n" :size 40 :value ""))
+    (SILENT_KEY . (editable-field :format "  SILENT_KEY   %v\n" :size 1 :value ""))
+    (SKCC . (editable-field :format "  SKCC         %v\n" :size 40 :value ""))
+    (SOTA_REF . (editable-field :format "  SOTA_REF     %v\n" :size 40 :value ""))
+    (SRX . (editable-field :format "  SRX          %v\n" :size 6 :value ""))
+    (SRX_STRING . (editable-field :format "  SRX_STRING   %v\n" :size 40 :value ""))
+    (STATE . (editable-field :format "  STATE        %v\n" :size 40 :value ""))
+    (STATION_CALLSIGN . (editable-field :format "  STATION_CALLSIGN %v\n" :size 40 :value ""))
+    (STX . (editable-field :format "  STX          %v\n" :size 40 :value ""))
+    (STX_STRING . (editable-field :format "  STX_STRING   %v\n" :size 40 :value ""))
+    (SUBMODE . (menu-choice :format "  SUBMODE      %[%v%]" :value ""
 			    (item :tag "8PSK125 (PSK)" :value "8PSK125")
 			    (item :tag "8PSK125F (PSK)" :value "8PSK125F")
 			    (item :tag "8PSK125FL (PSK)" :value "8PSK125FL")
@@ -1237,17 +1247,17 @@ for a whole session can set PKTUSB to that mode here, for example
 			    (item :tag "VARA SATELLITE (DYNAMIC)" :value "VARA SATELLITE")
 			    (item :tag "VARA FM 1200 (DYNAMIC)" :value "VARA FM 1200")
 			    (item :tag "VARA FM 9600 (DYNAMIC)" :value "VARA FM 9600")))
-    (SWL . (editable-field :format "SWL: %v\n" :size 1 :value ""))
-    (TEN_TEN . (editable-field :format "TEN_TEN: %v\n" :size 6 :value ""))
-    (TIME_OFF . (editable-field :format "TIME_OFF: %v\n" :size 6 :value ""))
-    (TIME_ON . (editable-field :format "TIME_ON: %v\n" :size 6 :value ""))
-    (TX_PWR . (editable-field :format "TX_PWR: %vW\n" :size 6 :value ""))
-    (UKSMG . (editable-field :format "UKSMG: %v\n" :size 40 :value ""))
-    (USACA_COUNTIES . (editable-field :format "USACA_COUNTIES: %v\n" :size 40 :value ""))
-    (VE_PROV . (editable-field :format "VE_PROV: %v\n" :size 40 :value ""))
-    (VUCC_GRIDS . (editable-field :format "VUCC_GRIDS: %v\n" :size 40 :value ""))
-    (WEB . (editable-field :format "WEB: %v\n" :size 41 :value ""))
-    (WWFF_REF . (editable-field :format "WWFF_REF: %v\n" :size 40 :value ""))
+    (SWL . (editable-field :format "  SWL          %v\n" :size 1 :value ""))
+    (TEN_TEN . (editable-field :format "  TEN_TEN      %v\n" :size 6 :value ""))
+    (TIME_OFF . (editable-field :format "  TIME_OFF     %v\n" :size 6 :value ""))
+    (TIME_ON . (editable-field :format "  TIME_ON      %v\n" :size 6 :value ""))
+    (TX_PWR . (editable-field :format "  TX_PWR       %vW\n" :size 6 :value ""))
+    (UKSMG . (editable-field :format "  UKSMG        %v\n" :size 40 :value ""))
+    (USACA_COUNTIES . (editable-field :format "  USACA_COUNTIES %v\n" :size 40 :value ""))
+    (VE_PROV . (editable-field :format "  VE_PROV      %v\n" :size 40 :value ""))
+    (VUCC_GRIDS . (editable-field :format "  VUCC_GRIDS   %v\n" :size 40 :value ""))
+    (WEB . (editable-field :format "  WEB          %v\n" :size 41 :value ""))
+    (WWFF_REF . (editable-field :format "  WWFF_REF     %v\n" :size 40 :value ""))
     (custom-choice . (menu-choice :tag "Choose" :format "Choose: %[%v%]\n" :value "This"
                                   :help-echo "Choose me, please!"
                                   :notify (lambda (widget &rest ignore)
@@ -1278,6 +1288,18 @@ for a whole session can set PKTUSB to that mode here, for example
 (defconst qso--hamlib-query "+\\get_freq\n+\\get_mode\n"
   "Commands sent to rigctld to read the current frequency and mode.")
 
+(defconst qso--hamlib-caps-query "+\\dump_caps\n"
+  "Command sent to rigctld once per connection to learn what radio it drives.
+
+The reply is long, and among it are the two lines this package wants:
+
+    Model name:             IC-7300
+    Mfg name:               Icom
+
+It is asked for once, when the connection opens, rather than on every
+poll.  A rigctld too old to know the command answers with a failing
+RPRT, which leaves the radio unnamed and nothing else disturbed.")
+
 (defvar qso--hamlib-process nil
   "Network connection to rigctld, or nil when not connected.")
 
@@ -1292,6 +1314,21 @@ for a whole session can set PKTUSB to that mode here, for example
 
 (defvar qso--hamlib-rig-mode nil
   "Mode name most recently reported by the radio, as a Hamlib string.")
+
+(defvar qso--hamlib-model nil
+  "Model name of the radio rigctld is driving, or nil when not known.
+Read from the radio's capabilities when the connection opens.")
+
+(defvar qso--hamlib-mfg nil
+  "Manufacturer of the radio rigctld is driving, or nil when not known.")
+
+(defvar qso--hamlib-awaiting-caps nil
+  "Non-nil while the reply to `qso--hamlib-caps-query' is still arriving.
+
+The capabilities dump runs to hundreds of lines and is answered before
+anything else on the same connection, so it is read on its own terms:
+while this is set, only the two lines wanted are looked at and the
+closing RPRT is not mistaken for the end of a frequency reading.")
 
 (defvar qso--hamlib-error nil
   "Description of the most recent radio communication failure, or nil.")
@@ -1343,6 +1380,14 @@ Used to tell a field the radio filled in from one the operator typed.")
     (ignore-errors (delete-process qso--hamlib-process)))
   (setq qso--hamlib-process nil))
 
+(defun qso--hamlib-forget-rig ()
+  "Forget which radio rigctld was driving.
+Called whenever the link goes, so that the name on the status line
+always belongs to the connection currently open."
+  (setq qso--hamlib-model nil)
+  (setq qso--hamlib-mfg nil)
+  (setq qso--hamlib-awaiting-caps nil))
+
 (defun qso--hamlib-failed (reason)
   "Record REASON for losing the radio and arrange to try again later."
   (qso--hamlib-discard-process)
@@ -1351,8 +1396,9 @@ Used to tell a field the radio filled in from one the operator typed.")
   (setq qso--hamlib-pending "")
   (setq qso--hamlib-freq nil)
   (setq qso--hamlib-rig-mode nil)
+  (qso--hamlib-forget-rig)
   (setq qso--hamlib-next-retry (+ (float-time) qso-hamlib-reconnect-interval))
-  (qso--hamlib-update-header-line))
+  (qso--hamlib-update-status-line))
 
 (defun qso--hamlib-connect ()
   "Begin connecting to rigctld.
@@ -1384,7 +1430,7 @@ making Emacs wait out the operating system's TCP timeout."
     (setq qso--hamlib-connect-timer
           (run-at-time qso-hamlib-connect-timeout nil
                        #'qso--hamlib-connect-expired)))
-  (qso--hamlib-update-header-line))
+  (qso--hamlib-update-status-line))
 
 (defun qso--hamlib-connect-expired ()
   "Give up on a connection attempt that rigctld never answered."
@@ -1406,8 +1452,14 @@ making Emacs wait out the operating system's TCP timeout."
           (qso--hamlib-cancel-connect-timer)
           (setq qso--hamlib-state 'connected)
           (setq qso--hamlib-error nil)
-          (ignore-errors (process-send-string process qso--hamlib-query))
-          (qso--hamlib-update-header-line))
+          ;; Ask what radio this is before asking what it is doing.
+          ;; rigctld answers in the order it is asked, so the capabilities
+          ;; are complete before the first reading arrives.
+          (setq qso--hamlib-awaiting-caps t)
+          (ignore-errors
+            (process-send-string process qso--hamlib-caps-query)
+            (process-send-string process qso--hamlib-query))
+          (qso--hamlib-update-status-line))
       (qso--hamlib-failed (string-trim event)))))
 
 (defun qso--hamlib-filter (_process string)
@@ -1422,6 +1474,17 @@ making Emacs wait out the operating system's TCP timeout."
 (defun qso--hamlib-handle-line (line)
   "Interpret a single response LINE from rigctld."
   (cond
+   ;; The capabilities dump, read on its own and not confused with a
+   ;; reading.  Its RPRT closes it and nothing else in it is wanted.
+   (qso--hamlib-awaiting-caps
+    (cond
+     ((string-match "\\`Model name:[ \t]*\\(.+\\)\\'" line)
+      (setq qso--hamlib-model (string-trim (match-string 1 line))))
+     ((string-match "\\`Mfg name:[ \t]*\\(.+\\)\\'" line)
+      (setq qso--hamlib-mfg (string-trim (match-string 1 line))))
+     ((string-match "\\`RPRT \\(-?[0-9]+\\)\\'" line)
+      (setq qso--hamlib-awaiting-caps nil)
+      (qso--hamlib-update-status-line))))
    ((string-match "\\`Frequency: \\([0-9]+\\)\\'" line)
     (setq qso--hamlib-freq (string-to-number (match-string 1 line))))
    ((string-match "\\`Mode: \\([A-Za-z0-9_-]+\\)\\'" line)
@@ -1447,7 +1510,7 @@ making Emacs wait out the operating system's TCP timeout."
    ;; radio that is switched off does not produce a stream of failures.
    ((>= (float-time) qso--hamlib-next-retry)
     (qso--hamlib-connect)))
-  (qso--hamlib-update-header-line))
+  (qso--hamlib-update-status-line))
 
 (defun qso--hamlib-freq-string ()
   "Return the radio's frequency in MHz as a string, or nil if unknown."
@@ -1528,42 +1591,77 @@ untouched."
           (when (qso--hamlib-set-field 'SUBMODE (cdr mode-pair))
             (setq changed t))
           (when changed
-            (widget-setup))
-          (qso--hamlib-update-header-line))))))
+            (widget-setup)
+            (qso--fontify-labels))
+          (qso--hamlib-update-status-line))))))
 
-(defun qso--hamlib-header-string ()
-  "Return the header line describing the radio, or nil to show none."
-  (cond
-   ((eq qso--hamlib-state 'connecting)
-    (format " RADIO  connecting to rigctld at %s:%d..."
-            qso-hamlib-host qso-hamlib-port))
-   ((not (qso--hamlib-live-p))
-    (format " RADIO  no connection to rigctld at %s:%d%s"
-            qso-hamlib-host qso-hamlib-port
-            (if qso--hamlib-error (format " (%s)" qso--hamlib-error) "")))
-   ((null qso--hamlib-freq)
-    (format " RADIO  connected to %s:%d, waiting for a reading"
-            qso-hamlib-host qso-hamlib-port))
-   (t
-    (let* ((mode-pair (qso--hamlib-adif-mode))
-           (logged
-            (cond
-             ((null mode-pair) "not recognized")
-             ((string-empty-p (car mode-pair)) "not logged")
-             ((string-empty-p (cdr mode-pair)) (car mode-pair))
-             (t (format "%s / %s" (car mode-pair) (cdr mode-pair))))))
-      (format " RADIO  %s MHz   %s   logged as %s"
-              (or (qso--hamlib-freq-string) "?")
-              (or qso--hamlib-rig-mode "?")
-              logged)))))
+(defvar-local qso--status-start nil
+  "Marker at the start of the radio status line, or nil.")
 
-(defun qso--hamlib-update-header-line ()
-  "Refresh the radio reading shown above the QSO form."
+(defun qso--hamlib-rig-name ()
+  "Return the radio's model name, or \"Rig\" until it is known.
+
+The name comes from the radio itself, through `qso--hamlib-caps-query',
+so it says IC-7300 rather than the model number given to rigctld.  Until
+the reply arrives, and on a rigctld too old to answer, the line reads as
+it always did."
+  (or (and qso--hamlib-model
+           (not (string-empty-p qso--hamlib-model))
+           qso--hamlib-model)
+      "Rig"))
+
+(defun qso--hamlib-status-line ()
+  "Return the one line describing the radio link.
+
+Word for word and colour for colour the line `ham-rig' shows at the top
+of its own panel, so one connection reads the same way in either
+buffer, except that the radio names itself where `ham-rig' says Rig."
+  (let* ((where (propertize (format "%s:%d" qso-hamlib-host qso-hamlib-port)
+                            'face 'qso-label))
+         (state
+          (cond
+           ((eq qso--hamlib-state 'connecting)
+            (propertize "connecting" 'face 'qso-warn))
+           ((qso--hamlib-live-p) (propertize "connected" 'face 'qso-ok))
+           (t (propertize
+               (let ((wait (and qso--hamlib-next-retry
+                                (- qso--hamlib-next-retry (float-time)))))
+                 (if (and wait (> wait 0))
+                     (format "reconnecting in %.1fs" wait)
+                   "not connected"))
+               'face 'qso-danger))))
+         (reading
+          (when (and (qso--hamlib-live-p) qso--hamlib-freq)
+            (concat "  " (propertize (or (qso--hamlib-freq-string) "?")
+                                     'face 'qso-value)
+                    " " (propertize "MHz" 'face 'qso-unit)
+                    "  " (propertize (or qso--hamlib-rig-mode "?")
+                                     'face 'qso-value)))))
+    (concat (propertize (qso--hamlib-rig-name) 'face 'qso-label)
+            "  " where "  " state
+            (or reading ""))))
+
+(defun qso--hamlib-update-status-line ()
+  "Rewrite the radio status line in place near the top of the form.
+
+The line sits in the buffer rather than in a header line, because
+`ham-rig' has no header line and the two are meant to match.
+
+Only the one line is replaced, and widget.el's change hooks are held
+off while it happens: they scan for field boundaries on every edit, and
+a rewrite in the middle of a form full of widgets otherwise looks to
+them like a field being torn in half."
   (let ((buffer (get-buffer qso-form-buffer-name)))
-    (when (and (buffer-live-p buffer) qso-hamlib-header-line)
+    (when (and (buffer-live-p buffer) qso-hamlib-status-line)
       (with-current-buffer buffer
-        (setq header-line-format (qso--hamlib-header-string))
-        (force-mode-line-update)))))
+        (when (and (markerp qso--status-start)
+                   (marker-position qso--status-start))
+          (let ((inhibit-read-only t)
+                (inhibit-modification-hooks t))
+            (save-excursion
+              (goto-char qso--status-start)
+              (delete-region (line-beginning-position) (line-end-position))
+              (insert (qso--hamlib-status-line)))))))))
 
 (defun qso-hamlib-start ()
   "Start following the radio's frequency and mode through rigctld."
@@ -1590,8 +1688,9 @@ untouched."
   (setq qso--hamlib-freq nil)
   (setq qso--hamlib-rig-mode nil)
   (setq qso--hamlib-error nil)
+  (qso--hamlib-forget-rig)
   (setq qso--hamlib-next-retry 0)
-  (qso--hamlib-update-header-line))
+  (qso--hamlib-update-status-line))
 
 (defun qso-hamlib-toggle ()
   "Turn radio synchronization on or off for the rest of this session."
@@ -2008,9 +2107,16 @@ whatever the chosen source knows is laid over the top of it."
       (setq result (cons pair (assq-delete-all (car pair) result))))
     (nreverse result)))
 
+(define-derived-mode qso-info-mode special-mode "QSO Info"
+  "Major mode for the callsign lookup report.
+
+The report is something to read and then dismiss, so the buffer is a
+`special-mode' one: it is read-only and \\<qso-info-mode-map>\\[quit-window] buries it.")
+
 (defun qso--lookup-show (call data)
   "Display DATA for CALL in the *Callsign Info* buffer."
   (with-current-buffer (get-buffer-create "*Callsign Info*")
+    (qso-info-mode)
     (let ((inhibit-read-only t))
       (erase-buffer)
       (if (null data)
@@ -2045,7 +2151,7 @@ Return the list of fields that were filled in."
               ;; Not on the form, so carry it to the record instead.
               (push (cons field value) qso--lookup-extra)
               (push field filled)))))))
-    (when touched (widget-setup))
+    (when touched (widget-setup) (qso--fontify-labels))
     (nreverse filled)))
 
 (defun qso--lookup-call-value ()
@@ -2077,24 +2183,323 @@ With AUTOFILL non-nil, also fill in `qso-call-lookup-fields'."
          (t (message "QSO: %d field(s) found for %s"
                      (length data) (upcase call)))))))))
 
-(defvar qso-form-map
-  (let ((map (copy-keymap widget-keymap)))
+
+;;; Appearance and mode
+
+;; These inherit the standard faces `adif.el' gets from font-lock, so a
+;; field name looks the same on the form as the matching ADIF tag does in
+;; the log file, and both follow whatever theme is loaded.
+
+(defface qso-label '((t :inherit font-lock-keyword-face))
+  "Face for field names on the QSO form."
+  :group 'qso)
+
+(defface qso-note '((t :inherit font-lock-comment-face))
+  "Face for the lines at the top of the form."
+  :group 'qso)
+
+(defface qso-value '((t :inherit default))
+  "Face for readings taken from the radio."
+  :group 'qso)
+
+(defface qso-unit '((t :inherit font-lock-string-face))
+  "Face for units and the modes a reading is logged as."
+  :group 'qso)
+
+(defface qso-ok '((t :inherit success))
+  "Face for a working radio link."
+  :group 'qso)
+
+(defface qso-warn '((t :inherit warning))
+  "Face for a radio link still being established."
+  :group 'qso)
+
+(defface qso-danger '((t :inherit error))
+  "Face for a radio link that is down."
+  :group 'qso)
+
+(defun qso--face-region (from to face)
+  "Give the text between FROM and TO the appearance of FACE.
+
+An overlay is used rather than a text property.  `font-lock-mode' is on
+by default in Emacs, and fontifying a region begins by removing the
+`face' text properties in it, so a colour put on as a text property
+comes off again the moment the form is first displayed.  Overlay faces
+font-lock does not touch.
+
+The overlay is marked so that `qso--fontify-labels' can find its own
+again, and evaporates if the text it covers is deleted."
+  (let ((ov (make-overlay from to)))
+    (overlay-put ov 'qso-face-overlay t)
+    (overlay-put ov 'face face)
+    (overlay-put ov 'evaporate t)
+    ;; The same face is put on as a text property as well.  Font-lock
+    ;; removes it again wherever it is running, which is what the
+    ;; overlay is for; where it is not running, or where something else
+    ;; has taken the overlay away, the property is what shows.
+    (let ((inhibit-read-only t))
+      (add-face-text-property from to face t))
+    ov))
+
+(defun qso--fontify-labels ()
+  "Colour the field names down the left of the form.
+
+The names are part of each widget's `:format', so they are ordinary
+buffer text rather than anything the widget redraws on its own.  They
+are coloured again after every redraw, since a widget that is cleared
+or refilled reinstates its format and takes the old overlay with it."
+  (remove-overlays (point-min) (point-max) 'qso-face-overlay t)
+  (save-excursion
+    (goto-char (point-min))
+    ;; The title line, which names the operator and the log file.
+    (qso--face-region (line-beginning-position) (line-end-position) 'qso-note))
+  (if qso--widget-alist
+      ;; A name is part of its own widget's `:format', so it is looked for
+      ;; inside that widget.  Guessing at the shape of the line instead
+      ;; misses any field whose format is indented differently, or not at
+      ;; all, which is a thing `qso-form-field-definitions' is free to do.
+      (dolist (entry qso--widget-alist)
+        (let* ((field (nth 0 entry))
+               (widget (nth 1 entry))
+               (from (widget-get widget :from))
+               (to   (widget-get widget :to)))
+          (when (and (markerp from) (markerp to)
+                     (marker-position from) (marker-position to))
+            (save-excursion
+              (goto-char from)
+              (when (re-search-forward
+                     (concat "\\_<" (regexp-quote (symbol-name field)) "\\_>")
+                     to t)
+                (qso--face-region (match-beginning 0) (match-end 0)
+                                  'qso-label))))))
+    ;; Before the widgets have been remembered, go by the shape of the
+    ;; formats, allowing whatever indent they use.
+    (save-excursion
+      (goto-char (point-min))
+      (while (re-search-forward "^[ \t]*\\([A-Z][A-Z0-9_]*\\)\\_>" nil t)
+        (qso--face-region (match-beginning 1) (match-end 1) 'qso-label)))))
+
+(defun qso-activate (pos &optional event)
+  "Press the button at POS, or finish entering the field there.
+
+RET does both jobs in a form, and widget.el decides between them by
+keeping two keymaps: `widget-keymap', where RET presses a button, and
+`widget-field-keymap', where it ends an entry.  Every widget in this
+form carries one keymap so that the form's own commands work throughout
+it, so the choice is made here, by looking at what is under point,
+rather than by which keymap happens to be in force.
+
+Without this, a menu-choice field such as MODE or BAND -- which is a
+button, not a field -- inherits the field keymap's RET, which finds no
+field, falls through to the global RET, and leaves the value
+unchangeable.
+
+EVENT is the input event, as for `widget-button-press'."
+  (interactive "@d")
+  (if (get-char-property pos 'button)
+      (widget-button-press pos event)
+    (widget-field-activate pos event)))
+
+(defvar qso-command-map
+  (let ((map (make-sparse-keymap)))
+    ;; RET is here rather than left to the widget maps so that it means
+    ;; the same thing on a field and on a button; see `qso-activate'.
+    (define-key map (kbd "RET") #'qso-activate)
     (define-key map (kbd "C-c C-r") #'qso-hamlib-sync-now)
     (define-key map (kbd "C-c C-t") #'qso-hamlib-toggle)
     (define-key map (kbd "C-c C-l") #'qso-call-lookup-at-point)
+    ;; Not C-c C-h: Emacs claims C-h after a prefix for its own list of
+    ;; bindings, which is what produced a Fundamental mode help buffer.
+    (define-key map (kbd "C-c ?") #'qso-show-keys)
     map)
-  "Keymap used in the QSO Log Entry form.")
+  "The form's own commands.
+
+Kept apart from the maps they are reached through so that there is one
+copy of them, shared by the buffer as a whole and by the inside of every
+editable field.  See `qso-field-keymap'.")
+
+(defvar qso-form-map (make-composed-keymap qso-command-map widget-keymap)
+  "Keymap of the QSO Log Entry form, in force outside the fields.")
+
+(defvar qso-field-keymap
+  (make-composed-keymap qso-command-map widget-field-keymap)
+  "Keymap in force while point is inside an editable field of the form.
+
+widget.el gives each field an overlay carrying `widget-field-keymap' as
+its `local-map', and an overlay's map replaces the buffer's local map
+rather than adding to it.  A binding held only in `qso-form-map' is
+therefore invisible everywhere the operator actually types: it answers
+on a menu-choice field such as MODE, which is a button and has no such
+overlay, and nowhere else.  Composing `qso-command-map' in front of
+`widget-field-keymap' puts the form's own commands ahead of the field's
+editing keys while leaving those keys intact.")
+
+(defconst qso--empty-choice '(item :format "%t\n" :tag "-")
+  "What a menu-choice field shows before anything has been chosen.
+
+Such a field starts out empty, and an empty value is not one of the
+choices, so widget.el would otherwise render it as \"invalid ()\".  The
+placeholder is one character wide rather than nothing at all, so that
+there is still a button to move onto and press.
+
+The newline matters: a menu-choice `:format' in `qso-form-field-definitions'
+ends at the value, the line being finished by whichever child is on
+display, so a placeholder without one lets the next field run onto the
+same line.")
+
+(easy-menu-define qso-form-menu qso-command-map
+  "Menu for the QSO log entry form."
+  '("QSO"
+    ["Look up callsign" qso-call-lookup-at-point :keys "C-c C-l"
+     :help "Show what is known about the callsign in the form"]
+    ["Look up and autofill" (lambda () (interactive) (qso-call-lookup-at-point t)) :keys "C-u C-c C-l"
+     :help "Also fill in the fields chosen in QSO Callsign Lookup Fields"]
+    "---"
+    ["Read the radio now" qso-hamlib-sync-now :keys "C-c C-r"
+     :active qso-hamlib-enable]
+    ["Follow the radio" qso-hamlib-toggle :keys "C-c C-t"
+     :active qso-hamlib-enable]
+    "---"
+    ["Keys" qso-show-keys :keys "C-c ?"]
+    ["Customize" (lambda () (interactive) (customize-group 'qso))
+     :help "Fields on the form, ADIF file, radio and callsign lookup"]))
+
+(defun qso--key-for (command map)
+  "Return how COMMAND is reached in MAP, or nil when it is not bound there."
+  (let ((keys (where-is-internal command map t)))
+    (and keys (key-description keys))))
+
+(defun qso--insert-key-rows (heading rows map)
+  "Insert HEADING and then ROWS, each looked up in MAP.
+
+Every row is (COMMAND . DESCRIPTION) and the key column is read from the
+keymap rather than written out here, so this list cannot come to
+disagree with what the keys actually do.  A command that is not bound is
+left out rather than reported wrongly."
+  (let ((found (delq nil
+                     (mapcar (lambda (row)
+                               (let ((key (qso--key-for (car row) map)))
+                                 (and key (cons key (cdr row)))))
+                             rows))))
+    (when found
+      (insert "\n" (propertize heading 'face 'bold) "\n")
+      (dolist (row found)
+        (insert (format "  %-10s %s\n"
+                        (propertize (car row) 'face 'qso-label)
+                        (cdr row)))))))
+
+(defun qso-show-keys ()
+  "Show the keys and buttons available in the QSO log form."
+  (interactive)
+  (with-current-buffer (get-buffer-create "*QSO Keys*")
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (insert (propertize "QSO Log Entry   keys\n" 'face 'qso-note))
+      (qso--insert-key-rows
+       "Moving about"
+       '((widget-forward . "Next field or button")
+         (widget-backward . "Previous field or button")
+         (widget-button-press . "Press the button at point"))
+       qso-form-map)
+      (qso--insert-key-rows
+       "Commands, which work inside a field as well as between fields"
+       '((qso-call-lookup-at-point
+          . "Look up the callsign; with C-u also fill the fields")
+         (qso-hamlib-sync-now . "Read frequency and mode from the radio now")
+         (qso-hamlib-toggle . "Start or stop following the radio")
+         (qso-show-keys . "Show this list"))
+       qso-form-map)
+      (qso--insert-key-rows
+       "Inside a field"
+       '((widget-field-activate . "Finish entering this field")
+         (widget-complete . "Complete the value where the field offers a choice")
+         (widget-kill-line . "Kill to the end of the field"))
+       qso-field-keymap)
+      (qso--insert-key-rows
+       "Help"
+       '((describe-mode . "Describe the mode in full"))
+       (current-global-map))
+      (insert "\n" (propertize "Buttons\n" 'face 'bold))
+      (dolist (row '(("Lookup" "Show what is known about the callsign")
+                     ("Lookup & Autofill" "Also fill in the chosen fields")
+                     ("Submit" "Write the QSO to the ADIF file")
+                     ("Clear" "Empty the fields without saving")
+                     ("Quit" "Close the form")))
+        (insert (format "  %-18s %s\n"
+                        (propertize (car row) 'face 'qso-label) (cadr row))))
+      (goto-char (point-min)))
+    (qso-keys-mode)
+    (pop-to-buffer (current-buffer))))
+
+(define-derived-mode qso-keys-mode special-mode "QSO Keys"
+  "Major mode for the QSO key list.")
+
+(define-derived-mode qso-mode fundamental-mode "QSO"
+  "Major mode for the QSO log entry form.
+
+The buffer is a form: one field per line, with buttons under it.  Fields
+are ordinary editable text, so the usual editing keys work inside them.
+
+Moving about
+
+  \\<widget-keymap>\\[widget-forward] moves to the next field or button and \\[widget-backward] to the previous one.
+  \\<widget-keymap>\\[widget-button-press] presses the button at point.  Inside a field, \\<widget-field-keymap>\\[widget-field-activate] ends the entry
+  and \\[widget-complete] completes it where the field offers a choice.
+
+Commands
+
+\\<qso-form-map>  \\[qso-call-lookup-at-point]
+      Look up the callsign in the form and report what is known.
+      With a prefix argument, also fill in the fields named by
+      `qso-call-lookup-fields'.
+  \\[qso-hamlib-sync-now]
+      Read frequency and mode from the radio at once.
+  \\[qso-hamlib-toggle]
+      Start or stop following the radio.
+  \\[qso-show-keys]
+      Show the keys and the buttons in a buffer of their own.
+
+These four work inside a field as well as between fields; see
+`qso-field-keymap' for what that takes.
+
+Buttons
+
+  Lookup, Lookup & Autofill  as \\[qso-call-lookup-at-point] above.
+  Submit                     write the QSO to `qso-adif-path'.
+  Clear                      empty the fields without writing anything.
+  Quit                       close the form.
+
+The date, time and operator are added when the QSO is written, and BAND
+is worked out from FREQ when BAND is not on the form.
+
+Everything bound outside the fields, in full:
+
+\\{qso-form-map}"
+  (setq-local truncate-lines nil)
+  ;; The mode carries the form's keys itself, rather than leaving
+  ;; `qso-log-form' to install them afterwards.
+  (use-local-map qso-form-map))
+
 
 
 (defun qso-log-form ()
   "Create a dynamic QSO log form based on `qso-form-fields`."
   (interactive)
   (switch-to-buffer qso-form-buffer-name)
-  (kill-all-local-variables)
+  (qso-mode)
   (let ((inhibit-read-only t))
     (erase-buffer))
   (remove-overlays)
-  (widget-insert "OPERATOR: " qso-OPERATOR " \n")
+  ;; One plain line first, saying what this buffer is.  The radio's own
+  ;; line follows, matching `ham-rig'.  The keys are on C-c ? and C-h m
+  ;; rather than across the top of every form.
+  (widget-insert
+   (propertize (format "QSO Log Entry   %s   %s\n" qso-OPERATOR qso-adif-path)
+               'face 'qso-note))
+  (when (and qso-hamlib-enable qso-hamlib-status-line)
+    (setq qso--status-start (copy-marker (point) nil))
+    (widget-insert (qso--hamlib-status-line) "\n"))
+  (widget-insert "\n")
   (let ((widget-alist '()))
     ;; Create widgets for each field and store in widget-alist in the same order
     (dolist (field-info qso-form-fields)
@@ -2102,16 +2507,31 @@ With AUTOFILL non-nil, also fill in `qso-call-lookup-fields'."
              (clear-after-submit (cdr field-info))
              (field-definition (alist-get field qso-form-field-definitions)))
         (when field-definition
-          (let ((widget (apply #'widget-create field-definition)))
+          ;; These go in ahead of the definition's own arguments: the
+          ;; plist has to come before a menu-choice's item specifications,
+          ;; which widget.el reads as the widget's children.
+          (let* ((type  (car field-definition))
+                 ;; Every widget gets the same keymap, whether it is a
+                 ;; field or a button.  widget.el hands it to a field as
+                 ;; an overlay `local-map', which replaces the buffer's
+                 ;; local map, so a binding kept only in `qso-form-map'
+                 ;; would be lost wherever the operator types; RET tells
+                 ;; a button from a field by itself, in `qso-activate'.
+                 (extra (append (list :keymap qso-field-keymap)
+                                (when (eq type 'menu-choice)
+                                  (list :void qso--empty-choice))))
+                 (widget (apply #'widget-create type
+                                (append extra (cdr field-definition)))))
             (setq widget-alist (append widget-alist (list (list field widget clear-after-submit))))
 	    (when (eq field 'CALL)
 	      (when qso-call-lookup
-	        (widget-create 'push-button
+	        (widget-create 'push-button :button-face 'qso-label
 	      		 :notify (lambda (&rest _)
 	      			   (qso-call-lookup-at-point nil))
 	      		 "Lookup"))
 	      (when qso-call-lookup-autofill
-	        (widget-create 'push-button
+	        (widget-insert " ")
+	        (widget-create 'push-button :button-face 'qso-label
 	      		 :notify (lambda (&rest _)
 	      			   (qso-call-lookup-at-point t))
 	      		 "Lookup & Autofill"))
@@ -2119,7 +2539,7 @@ With AUTOFILL non-nil, also fill in `qso-call-lookup-fields'."
 
     ;; Add submit, clear and quit buttons
     (widget-insert "\n")
-    (widget-create 'push-button
+    (widget-create 'push-button :button-face 'qso-label
                    :notify (lambda (&rest _)
                              (let ((adif-string "")
 				   (call-value nil)
@@ -2162,7 +2582,7 @@ With AUTOFILL non-nil, also fill in `qso-call-lookup-fields'."
 				     (insert (format "%s\n" qso-adif-title))
 				     (insert "<ADIF_VER:5>3.1.4\n")
 				     (insert (format "<CREATED_TIMESTAMP:15>%s\n" timestamp))
-				     (insert "<PROGRAMID:16>Emacs-QSO-Logger\n<PROGRAMVERSION:5>1.3.0\n<EOH>\n"))
+				     (insert "<PROGRAMID:16>Emacs-QSO-Logger\n<PROGRAMVERSION:5>1.3.5\n<EOH>\n"))
 				   (write-region (point-min) (point-max) qso-adif-path t))
 				 (message "File created, header written to file"))
 			       ;; Check for duplicate callsign
@@ -2269,6 +2689,11 @@ With AUTOFILL non-nil, also fill in `qso-call-lookup-fields'."
 				 (with-temp-buffer
                                    (insert adif-string)
                                    (write-region (point-min) (point-max) qso-adif-path t))))
+			     ;; Clearing a field redraws its widget, and a
+			     ;; menu-choice redraws its whole format, name
+			     ;; and all, so the names have to be coloured
+			     ;; again or the form comes back plain.
+			     (qso--fontify-labels)
 			     (goto-char (point-min))
 			     (widget-forward 1)
 			     ;; The looked-up details belong to the contact just logged.
@@ -2277,7 +2702,7 @@ With AUTOFILL non-nil, also fill in `qso-call-lookup-fields'."
 			     (message "QSO logged!"))
 		   "Submit")
     (widget-insert " ") ;; Add a space between buttons
-    (widget-create 'push-button
+    (widget-create 'push-button :button-face 'qso-label
                    :notify (lambda (&rest _)
                              (let ((_adif-string "")
 				   (_call-value nil)
@@ -2294,20 +2719,22 @@ With AUTOFILL non-nil, also fill in `qso-call-lookup-fields'."
                                        (widget-value-set widget "")))))
 			     (setq qso--lookup-extra nil)
 			     (setq qso--lookup-call nil)
+			     (qso--fontify-labels)
 			     (goto-char (point-min))
 			     (widget-forward 1))
                    "Clear")
     (widget-insert " ") ;; Add a space between buttons
-    (widget-create 'push-button
+    (widget-create 'push-button :button-face 'qso-label
                    :notify (lambda (&rest _)
                              (kill-buffer qso-form-buffer-name))
                    "Quit")
-    (use-local-map qso-form-map)
     (widget-setup)
-    (widget-forward 1)
     ;; Remember the widgets so that the radio poller, which runs long after
-    ;; this function has returned, can reach them.
+    ;; this function has returned, can reach them.  This comes before the
+    ;; names are coloured, because that works from the widgets.
     (setq-local qso--widget-alist widget-alist)
+    (qso--fontify-labels)
+    (widget-forward 1)
     (setq-local qso--hamlib-written nil)
     (add-hook 'kill-buffer-hook #'qso-hamlib-stop nil t)
     (when qso-hamlib-enable

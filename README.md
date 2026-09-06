@@ -1,122 +1,182 @@
 # Emacs-QSO-Logger
-This LISP code provides some basic functions for Emacs to rapidly capture and log amateur radio contacts (QSOs) into an ADIF file.
 
-qso.el provides a fuction that generates a customizable, dynamic form (qso-log-form) to log amateur radio QSOs using almost any combination of ADIF fields in the ADIF 3.1.4 specification. This allows 
-the user to customize the form for use in contests or general logging. All customizations are accessible in the 
-QSO group, whose parent is the Emacs "Applications" group, accessed with `M-x customize`.
+An Emacs form for logging amateur radio contacts (QSOs) to an ADIF file.
 
-Further processing of the logs can be done within Emacs or by importing the ADIF file into another logging program.  
+`qso.el` provides `qso-log-form`, a customizable form built from almost any
+combination of fields in the ADIF 3.1.4 specification, so it can be set up for
+contest work or for general logging. Every setting is in the QSO customization
+group, under "Applications" in `M-x customize`.
+
+Logs can be processed further within Emacs or imported into another logging
+program.
 
 ## Features
-- Simple, customizable text interface for real-time ham radio QSO logging or even to rapidly convert paper log entries to an ADIF
-- Runs entirely in a Linux terminal environment, allowing for its use in ultra-light, low-power HW/SW configurations (e.g. terminal-only mode on a Raspberry Pi Zero 2W)
-- No mouse required (using tab or shift-tab to change fields or hover over buttons)
-- Log entries are appended to a user-specified ADIF log file
-- Any field in the ADIF 3.1.4 specification can be selected to appear on the form, in whatever order is desired
-- Each field has an option to preserve the most recent information after a QSO submission
-   - Example: For situations where frequency and mode unchanged between QSOs
-   - Also useful for repeating sent information reports in contests
-- Automatically populates BAND based on FREQ for commonly used bands, if otherwise left blank or not shown on the form
-- Optional live radio synchronization through Hamlib's rigctld: FREQ, MODE and SUBMODE follow the radio as the operator tunes or changes mode, and the current reading is shown in the header line above the form
-- Option to lookup callsign information and show the information (text) in another buffer (requires an internet connection)
-- Callsigns can be looked up at callook.info, HamQTH or QRZ.com, and the fields worth keeping can be filled in automatically, whether or not they appear on the form
-- Country, continent and CQ/ITU zones can be worked out from the callsign itself using a cty.dat country file, which covers the whole world with no network connection and no account
-- Option to check the log for duplicates before recording the QSO
-- Option to clear the form without saving the information (e.g. for incomplete QSOs)
+
+- Text interface for real-time logging, or for entering paper logs
+- Runs in a Linux terminal, so it suits low-power hardware such as a
+  Raspberry Pi Zero 2W in terminal-only mode
+- No mouse required: `TAB` and `S-<tab>` move between fields and buttons
+- Entries are appended to a user-specified ADIF file
+- Any field in the ADIF 3.1.4 specification can appear on the form, in any
+  order
+- Each field can keep its value after a submission — useful when frequency and
+  mode are unchanged between contacts, and for repeating sent reports in
+  contests
+- BAND is filled in from FREQ for the common bands when BAND is blank or absent
+  from the form
+- FREQ, MODE and SUBMODE follow the radio through Hamlib's `rigctld`
+- Callsign lookup, either reported in a separate buffer or filled into the form
+- Duplicate checking before a contact is recorded
+- The form can be cleared without saving, for an incomplete contact
 
 ## Manual Installation
-1) Place qso.el in the load path. If one hasn't been established, you can place it in `~/.emacs.d/lisp/` and
-   then, in the init.el file (located in ~/.emacs.d/) add: `(add-to-list 'load-path "~/.emacs.d/lisp/")`
-2) Add to the init.el file: `(require 'qso)`
-3) Restart Emacs
+
+1. Place qso.el in the load path. If one hasn't been established, you can place
+   it in `~/.emacs.d/lisp/` and then, in the init.el file (located in
+   `~/.emacs.d/`) add: `(add-to-list 'load-path "~/.emacs.d/lisp/")`
+2. Add to the init.el file: `(require 'qso)`
+3. Restart Emacs
 
 ## Getting Started
-1) Execute `M-x customize`, select "Applications" and then select "QSO" to see the customization options.
-2) Enter your callsign in the QSO Operator field.
-3) Enter the path to the ADIF file you will be using (e.g. `~/qsolog.adi`).
-4) Add, remove, or reorder the fields you wish to have on the form.
-5) Select or deselect form fields that you wish you have cleared after a QSO submission (especially helpful for contests).
-6) Click "Apply" or "Apply and Save" as appropriate.
-7) Execute `M-x qso-log-form` to bring up and begin using the log entry form.
 
-## Reading Frequency and Mode From the Radio (optional)
-FREQ, MODE and SUBMODE can be read directly from a transceiver through
-[Hamlib](https://hamlib.github.io/), so they follow the radio as you tune or change mode
-rather than being typed for every contact. This is off by default.
+1. Execute `M-x customize`, select "Applications" and then "QSO".
+2. Enter your callsign in the QSO Operator field.
+3. Enter the path to the ADIF file you will be using (e.g. `~/qsolog.adi`).
+4. Add, remove, or reorder the fields you wish to have on the form.
+5. Select the fields to be cleared after a submission (helpful for contests).
+6. Click "Apply" or "Apply and Save" as appropriate.
+7. Execute `M-x qso-log-form`.
 
-1) Install Hamlib and start its `rigctld` daemon against your radio, for example:
+The form looks like this:
 
-   ```
-   rigctld -m 3073 -r /dev/ttyUSB0 -s 38400
-   ```
+    QSO Log Entry   K6SM   /home/dave/qsolog.adi
+    IC-7300  localhost:4532  connected  14.074000 MHz  USB
 
-   Run `rigctl -l` to find the model number (`-m`) for your radio. `rigctld` is used rather
-   than a direct serial connection so that the radio can be shared with other software
-   (WSJT-X, fldigi, and so on) and so that reading it never blocks Emacs.
-2) Turn on "QSO Hamlib Enable" in the QSO customization group, and set the host and port if
-   `rigctld` is not on the default `localhost:4532`.
-3) Add FREQ, MODE and (optionally) SUBMODE to the form fields so that the values are visible
-   while logging. SUBMODE is written to the ADIF record whether or not it appears on the form.
-4) Within the form, `C-c C-r` reads the radio once and `C-c C-t` turns synchronization on or off.
+      CALL         W1AW      [Lookup]
+      NAME         Hiram
+      RST_RCVD     599
+      RST_SENT     599
+      FREQ         14.074000  MHz
+      MODE         SSB
+      COMMENT
 
-The radio's frequency and mode are also shown in the header line above the form. That display
-comes straight from the radio and is never edited, so it stays accurate even where a field has
-been typed over, and it reports connection trouble instead of failing silently.
+    [Submit] [Clear] [Quit]
 
-### How fields are filled in
-A field is updated only when it is empty or still holds the value the radio last put there, and
-never while the cursor is inside it, so anything you type is left alone. Clearing a field hands
-it back to the radio, which is what makes "clear after submission" work well with a rig that is
-tuned between contacts.
+The second line appears only when the radio is being read; see below.
 
-Hamlib mode names are translated into ADIF MODE and SUBMODE values through the customizable
-"QSO Hamlib Mode Map". For example `USB` is logged as MODE `SSB` with SUBMODE `USB`, and `CWR`
-is logged as MODE `CW`.
+## Keys
 
-The packet modes (`PKTUSB`, `PKTLSB`, `PKTFM`) map to nothing by default. The radio reports only
-that it is in a data mode and cannot know whether you are running FT8, JS8, PSK31 or anything
-else, so guessing would file contacts under the wrong mode. If you work one digital mode for a
-whole session, set `PKTUSB` to that mode in the mode map and it will be filled in automatically.
+| Key | |
+|-----|--|
+| `TAB` `S-<tab>` | Next / previous field or button |
+| `RET` | Press the button at point, or finish entering a field |
+| `M-TAB` | Complete the value where the field offers a choice |
+| `C-c C-l` | Look up the callsign; `C-u C-c C-l` also fills the fields |
+| `C-c C-r` | Read frequency and mode from the radio now |
+| `C-c C-t` | Start or stop following the radio |
+| `C-c ?` | List these keys and the buttons |
+| `C-h m` | Describe the mode in full |
 
-If `rigctld` is not running, the form works exactly as it always has and the header line says so.
+The four `C-c` commands work inside a field as well as between fields. They
+are also on the QSO menu.
+
+Buttons: **Submit** writes the QSO, **Clear** empties the fields without
+writing, **Quit** closes the form.
+
+The date, time and operator are added when the contact is written.
 
 ## Looking Up Callsigns (optional)
-"QSO Callsign Lookup Source" chooses where details come from:
 
-| Source | Coverage | Account |
-| --- | --- | --- |
-| [callook.info](https://callook.info) | United States only | none needed (the default) |
-| [HamQTH](https://www.hamqth.com) | Worldwide | free, registration required |
-| [QRZ.com](https://www.qrz.com) | Worldwide | paid XML subscription |
+`C-c C-l`, or the **Lookup** button, reports what is known about the callsign
+in a separate buffer. `C-u C-c C-l` also fills in the fields named by "QSO Callsign
+Lookup Fields". A field you have already typed into is never overwritten, and a
+field that is not on the form is written to the ADIF record when the QSO is
+submitted.
 
-Most countries outside the United States do not publish operator names and addresses at
-all, which is why worldwide lookup means using a community-maintained callbook rather than
-an official register.
+Turning on "QSO Callsign Lookup Autofill" adds a **Lookup & Autofill** button
+beside **Lookup**. "QSO Callsign Lookup" controls the **Lookup** button itself;
+`C-c C-l` works either way.
 
-HamQTH and QRZ.com need a login. Put the username in "QSO Callsign Lookup User" and the
-password in `~/.authinfo.gpg`, so that it is never kept in your Emacs configuration:
+"QSO Callsign Lookup Source" selects where details come from:
 
-```
-machine www.hamqth.com login MYCALL password SECRET
-machine xmldata.qrz.com login MYCALL password SECRET
-```
+| Source | |
+|--------|--|
+| `callook` | callook.info, United States only, no account (the default) |
+| `hamqth` | HamQTH, worldwide, free account |
+| `qrz` | QRZ.com, worldwide, paid XML subscription |
+| `nil` | No online lookup |
 
-"QSO Callsign Lookup Fields" chooses what gets filled in — any of NAME, QTH, GRIDSQUARE,
-STATE, CNTY, COUNTRY, CQZ, ITUZ, CONT, LAT and LON. A field is filled whether or not it is
-on the form: anything not on the form is written straight into the ADIF record when the QSO
-is submitted. Which fields actually arrive depends on the source.
+HamQTH and QRZ.com need a login. Set "QSO Callsign Lookup User" to your
+callsign and put the password in `~/.authinfo.gpg`:
 
-Press `[Lookup]` to see what is known about a callsign, or `[Lookup & Autofill]` to also
-fill the chosen fields in. `C-c C-l` does the same from the keyboard.
+    machine www.hamqth.com login MYCALL password SECRET
 
-### Country and zones without an account
-Country, continent and CQ/ITU zones can be worked out from the callsign alone — for any
-callsign in the world, with no network connection and no account. Download a country file
-from [country-files.com](https://www.country-files.com), point "QSO Country File" at it,
-and leave "QSO Callsign Lookup DXCC" on.
+using `xmldata.qrz.com` for QRZ.com.
 
-This is the only part of callsign lookup that works everywhere, so it is worth setting up
-even if you never use a callbook. It cannot supply an operator's name, only where the
-station is. Whatever the chosen source reports takes precedence over it, and if the file is
-missing or unreadable the rest of the form carries on as usual. Country files are updated
-as new prefixes are allocated, so it is worth refreshing the file occasionally.
+Separately, "QSO Callsign Lookup DXCC" works out country, continent and zones
+from the callsign itself, for any callsign in the world, with no account and no
+network connection. It reads a `cty.dat` country file named by "QSO Country
+File"; these are published at <https://www.country-files.com>. It cannot supply
+an operator's name, only where the station is.
+
+## Reading Frequency and Mode From the Radio (optional)
+
+FREQ, MODE and SUBMODE can be read from a transceiver through
+[Hamlib](https://hamlib.github.io/), so they follow the radio as you tune or
+change mode. This is off by default.
+
+1. Install Hamlib and start its `rigctld` daemon against your radio. Example
+   (FTDX10):
+
+   ```
+   rigctld -m 1042 -r /dev/ttyUSB0 -s 38400
+   ```
+
+   Run `rigctl -l` to find the model number (`-m`) for your radio. `rigctld` is
+   used rather than a direct serial connection so that the radio can be shared
+   with other software (WSJT-X, fldigi, and so on) and so that reading it never
+   blocks Emacs.
+2. Turn on "QSO Hamlib Enable" in the QSO customization group, and set the host
+   and port if `rigctld` is not on the default `localhost:4532`.
+3. Add FREQ, MODE and optionally SUBMODE to the form fields so that the values
+   are visible while logging. SUBMODE is written to the ADIF record whether or
+   not it appears on the form.
+4. Within the form, `C-c C-r` reads the radio once and `C-c C-t` turns
+   synchronization on or off.
+
+A line under the title reports the link:
+
+    IC-7300  localhost:4532  connected  14.074000 MHz  USB
+
+It is headed by the model name the radio reports, so it names the radio rather
+than saying "Rig". A `rigctld` too old to answer for its capabilities leaves it
+reading "Rig". The frequency and mode shown there come straight from the radio
+and are never edited, so they stay accurate even where a field has been typed
+over, and connection trouble is reported rather than passed over in silence.
+"QSO Hamlib Status Line" turns the line off.
+
+If `rigctld` is not running, the form works exactly as it always has and the
+line says so.
+
+### How fields are filled in
+
+A field is updated only when it is empty or still holds the value the radio
+last put there, and never while the cursor is inside it, so anything you type
+is left alone. Clearing a field hands it back to the radio, which is what makes
+"clear after submission" work with a rig that is tuned between contacts.
+
+Hamlib mode names are translated into ADIF MODE and SUBMODE values through the
+customizable "QSO Hamlib Mode Map". For example `USB` is logged as MODE `SSB`
+with SUBMODE `USB`, and `CWR` is logged as MODE `CW`.
+
+The packet modes (`PKTUSB`, `PKTLSB`, `PKTFM`) map to nothing by default. The
+radio reports only that it is in a data mode and cannot know whether you are
+running FT8, JS8, PSK31 or anything else, so guessing would file contacts under
+the wrong mode. If you work one digital mode for a whole session, set `PKTUSB`
+to that mode in the mode map and it will be filled in automatically.
+
+## Editing a Log
+
+[adif-mode](https://github.com/K6SM/adif-mode) reads and edits ADIF files
+without disturbing the field lengths the format records. Neither package
+requires the other.
